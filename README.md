@@ -10,7 +10,7 @@ Yumin Feng<sup>1,†</sup>, Yanbo Xu<sup>2,†</sup>, Zipeng Wang<sup>1,†</sup
 
 <sup>†</sup> These authors contributed equally to this work. 
 
-<sup>* </sup> Correspondence: liuyibin@whu.edu.cn, zhiyuan.hu@whu.edu.cn,xzhou@whu.edu.cn
+<sup>* </sup> Correspondence: liuyibin@whu.edu.cn, zhiyuan.hu@whu.edu.cn, xzhou@whu.edu.cn
 
 ## Data preprocessing
 
