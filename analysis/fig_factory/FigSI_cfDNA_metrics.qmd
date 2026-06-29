@@ -1,5 +1,5 @@
 ---
-title: "FigSI cfDNA 10x metrics"
+title: "FigSI cfDNA metrics"
 author: "Yanbo Xu"
 date: "2026-05-23"
 date-modified: last-modified
