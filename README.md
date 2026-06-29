@@ -32,3 +32,4 @@ Figures of methylation sequencing part. Processing code in `script`, and noteboo
 * HeLa methylation level and coverage profile in CGI and flanking regions: `script/cgi_profile_bins.R`, `script/cgi_map_coverage_nodown.sh`, `script/cgi_map_methyl.sh`, `analysis/fig_factory/Fig5_cgi_profile.qmd`
 * cfDNA correlation scatter plot: `analysis/fig_factory/Fig6_correlation.qmd`
 * cfDNA metrics barplot: `analysis/fig_factory/FigSI_cfDNA_metrics.qmd`
+

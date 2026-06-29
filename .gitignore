@@ -18,3 +18,5 @@
 !script/*.sh
 !script/*.R
 !script/*.py
+script/md5.sh
+script/seqkit_read_counts.sh
