@@ -1,0 +1,504 @@
+---
+title: "FigSI HeLa gDNA methylation correlation"
+author: "Yanbo Xu"
+date: "2026-06-12"
+date-modified: last-modified
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  pdf: default
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(showtext)
+library(grid)
+
+project_dir <- normalizePath("/home/xuyanbo/project/MOF_TAPS", mustWork = TRUE)
+
+knitr::opts_chunk$set(dpi = 300, fig.width = 6, fig.height = 3.2)
+
+font_file <- "/home/xuyanbo/ARIAL.TTF"
+font_family <- "sans"
+
+if (file.exists(font_file)) {
+  font_add(family = "Arial", regular = font_file)
+  showtext_auto()
+  showtext_opts(dpi = 300)
+  font_family <- "Arial"
+}
+
+method_order <- c("TAPS", "TAPS+", "MOF-TAPS")
+input_order <- c("1 ng", "100 pg", "10 pg")
+
+method_colors <- c(
+  "TAPS"     = "#63B34C",
+  "TAPS+"    = "#E59A2F",
+  "MOF-TAPS" = "#3B82C4"
+)
+
+out_fig_dir <- file.path(
+  project_dir,
+  "analysis", "fig_factory", "fig", "FigSI",
+  "hela_gDNA_correlation"
+)
+out_table_dir <- file.path(
+  project_dir,
+  "analysis", "fig_factory", "tables", "FigSI",
+  "hela_gDNA_correlation"
+)
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_table_dir, recursive = TRUE, showWarnings = FALSE)
+
+min_cov <- 3L
+corr_chromosome_mode <- "autosomes"
+corr_bin_size <- 10000L
+min_corr_bin_total_N <- 10L
+min_corr_bin_cpgs <- 1L
+corr_density_bins <- 50L
+```
+
+```{r sample-meta}
+sample_info <- data.table(
+  sample = c(
+    "fym260106_S01", "fym260106_S02", "fym260106_S03",
+    "fym260106_S04", "fym260106_S05", "fym260106_S06",
+    "fym260124_S04", "fym260124_S05", "fym260124_S06"
+  ),
+  method = c(
+    "TAPS", "TAPS", "TAPS",
+    "TAPS+", "TAPS+", "TAPS+",
+    "MOF-TAPS", "MOF-TAPS", "MOF-TAPS"
+  ),
+  input_amount = c(
+    "10 pg", "100 pg", "1 ng",
+    "10 pg", "100 pg", "1 ng",
+    "10 pg", "100 pg", "1 ng"
+  ),
+  batch = c(
+    rep("260106_10x", 6),
+    rep("260124_10x", 3)
+  )
+)
+
+sample_info[, file := file.path(
+  project_dir,
+  "analysis",
+  batch,
+  "result",
+  "05methydackel_dedup",
+  "mergecontext",
+  paste0(sample, ".dedup.md.mergeContext_CpG.bedGraph")
+)]
+
+required_cols <- c("sample", "method", "input_amount", "file")
+missing_cols <- setdiff(required_cols, names(sample_info))
+if (length(missing_cols) > 0L) {
+  stop("sample_info is missing required columns: ", paste(missing_cols, collapse = ", "), call. = FALSE)
+}
+
+sample_info[, sample := as.character(sample)]
+sample_info[, method := as.character(method)]
+sample_info[, input_amount := as.character(input_amount)]
+sample_info[, file := as.character(file)]
+
+sample_info[, file_exists := file.exists(file)]
+if (any(!sample_info$file_exists)) {
+  print(sample_info[file_exists == FALSE, .(sample, method, input_amount, file)])
+  stop("Some MethylDackel mergeContext CpG bedGraph files do not exist.", call. = FALSE)
+}
+
+sample_info[, method := factor(method, levels = method_order)]
+sample_info[, input_amount := factor(input_amount, levels = input_order)]
+
+data.table::fwrite(
+  sample_info,
+  file.path(out_table_dir, "sample_info_used.tsv"),
+  sep = "\t"
+)
+
+sample_info[, .(sample, method, input_amount, file)]
+```
+
+```{r paired-input-map}
+sample_pair_files <- sample_info %>%
+  select(input_amount, method, sample, file)
+
+method_pairs <- tibble::tribble(
+  ~pair_id, ~x_method, ~y_method,
+  "TAPS_vs_TAPS_plus", "TAPS", "TAPS+",
+  "TAPS_vs_MOF_TAPS", "TAPS", "MOF-TAPS",
+  "TAPS_plus_vs_MOF_TAPS", "TAPS+", "MOF-TAPS"
+)
+
+pair_info <- tidyr::crossing(
+  input_amount = factor(input_order, levels = input_order),
+  method_pairs
+) %>%
+  mutate(input_index = as.integer(input_amount)) %>%
+  left_join(
+    sample_pair_files %>% rename(x_method = method, x_sample = sample, x_file = file),
+    by = c("input_amount", "x_method")
+  ) %>%
+  left_join(
+    sample_info %>%
+      select(input_amount, method, sample, file) %>%
+      rename(y_method = method, y_sample = sample, y_file = file),
+    by = c("input_amount", "y_method")
+  ) %>%
+  mutate(pair_label = paste(x_method, "vs", y_method)) %>%
+  arrange(match(pair_id, method_pairs$pair_id), input_index)
+
+if (any(is.na(pair_info$x_file)) || any(is.na(pair_info$y_file))) {
+  print(pair_info)
+  stop("Cannot resolve all pairwise method input pairs.", call. = FALSE)
+}
+
+data.table::fwrite(
+  pair_info,
+  file.path(out_table_dir, "paired_input_map.tsv"),
+  sep = "\t"
+)
+
+pair_info
+```
+
+```{r common-plot-theme}
+theme_figsi <- theme_classic(base_size = 10, base_family = font_family) +
+  theme(
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.4),
+    axis.ticks = element_line(color = "black", linewidth = 0.4),
+    axis.ticks.length = unit(0.16, "cm"),
+    axis.text.x = element_text(size = 10, color = "black", margin = margin(t = 4)),
+    axis.text.y = element_text(size = 10, color = "black"),
+    axis.title.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12, color = "black", margin = margin(r = 8)),
+    legend.position = "right",
+    legend.title = element_text(size = 10, color = "black"),
+    legend.text = element_text(size = 10, color = "black", margin = margin(l = 2)),
+    legend.key.width = unit(0.55, "cm"),
+    legend.key.height = unit(0.24, "cm"),
+    legend.background = element_blank(),
+    legend.box.background = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+percent_label <- function(x) paste0(x, "%")
+```
+
+# Summarize methylation by genomic bins
+
+```{r helper-summarize-mergecontext-bins}
+summarize_md_bins <- function(file, bin_size, chromosome_mode) {
+  if (!file.exists(file)) stop("File does not exist: ", file, call. = FALSE)
+
+  cmd <- paste0(
+    "zcat -f ", shQuote(file),
+    " | awk -v BS=", bin_size,
+    " -v MINCOV=", min_cov,
+    " -v CHR=", shQuote(chromosome_mode),
+    " '",
+    "BEGIN{OFS=\"\\t\"} ",
+    "$0 !~ /^(track|browser|#)/ { ",
+    "  if (CHR == \"primary\") { keep = ($1 ~ /^chr([1-9]|1[0-9]|2[0-2]|X|Y)$/) } ",
+    "  else if (CHR == \"autosomes\") { keep = ($1 ~ /^chr([1-9]|1[0-9]|2[0-2])$/) } ",
+    "  else { keep = ($1 == CHR) } ",
+    "  if (!keep) next; ",
+    "  cov = $5 + $6; ",
+    "  if (cov >= MINCOV) { ",
+    "    bin = int($2 / BS) * BS; ",
+    "    m = $6; u = $5; ",
+    "    key = $1 SUBSEP bin; ",
+    "    msum[key] += m; usum[key] += u; nsum[key] += cov; cpg[key] += 1; ",
+    "  } ",
+    "} ",
+    "END{ ",
+    "  for (key in nsum) { ",
+    "    split(key, a, SUBSEP); ",
+    "    print a[1], a[2], a[2] + BS, a[2] + BS / 2, msum[key], usum[key], nsum[key], cpg[key]; ",
+    "  } ",
+    "}'"
+  )
+
+  x <- fread(
+    cmd = cmd,
+    header = FALSE,
+    col.names = c("chr", "bin_start", "bin_end", "bin_mid", "m", "u", "N", "covered_CpGs"),
+    showProgress = FALSE
+  )
+
+  if (nrow(x) == 0L) {
+    return(data.table(
+      chr = character(), bin_start = integer(), bin_end = integer(), bin_mid = numeric(),
+      m = numeric(), u = numeric(), N = numeric(), covered_CpGs = integer(),
+      modification_rate = numeric()
+    ))
+  }
+
+  x[, `:=`(
+    bin_start = as.integer(bin_start),
+    bin_end = as.integer(bin_end),
+    bin_mid = as.numeric(bin_mid),
+    m = as.numeric(m),
+    u = as.numeric(u),
+    N = as.numeric(N),
+    covered_CpGs = as.integer(covered_CpGs)
+  )]
+
+  x <- x[N > 0]
+  x[, modification_rate := 100 * m / N]
+  setorder(x, chr, bin_start)
+  x[]
+}
+```
+
+```{r summarize-all-samples-correlation-bins}
+corr_sample_bin_list <- vector("list", nrow(sample_info))
+
+for (i in seq_len(nrow(sample_info))) {
+  message("Summarizing ", corr_chromosome_mode, " ", corr_bin_size, " bp bins for ", sample_info$sample[i])
+
+  x <- summarize_md_bins(
+    file = sample_info$file[i],
+    bin_size = corr_bin_size,
+    chromosome_mode = corr_chromosome_mode
+  )
+
+  x <- x[N >= min_corr_bin_total_N & covered_CpGs >= min_corr_bin_cpgs]
+
+  x[, sample := sample_info$sample[i]]
+  x[, input_amount := as.character(sample_info$input_amount[i])]
+  x[, method := as.character(sample_info$method[i])]
+
+  corr_sample_bin_list[[i]] <- x
+}
+
+corr_sample_bin_df <- rbindlist(corr_sample_bin_list, use.names = TRUE)
+corr_sample_bin_df[, input_amount := factor(input_amount, levels = input_order)]
+corr_sample_bin_df[, method := factor(method, levels = method_order)]
+
+corr_sample_summary <- corr_sample_bin_df[
+  ,
+  .(
+    n_bins = .N,
+    total_N = sum(N),
+    total_CpGs = sum(covered_CpGs),
+    mean_bin_modification_rate = mean(modification_rate)
+  ),
+  by = .(sample, input_amount, method)
+]
+
+data.table::fwrite(
+  corr_sample_summary,
+  file.path(out_table_dir, paste0("sample_level_", corr_chromosome_mode, "_", corr_bin_size, "bp_bin_summary.tsv")),
+  sep = "\t"
+)
+
+corr_sample_summary
+```
+
+# Paired input method correlations
+
+```{r summarize-paired-correlation-bins}
+pair_plot_list <- vector("list", nrow(pair_info))
+pair_label_list <- vector("list", nrow(pair_info))
+
+for (i in seq_len(nrow(pair_info))) {
+  p <- pair_info[i, ]
+
+  x_dt <- corr_sample_bin_df[
+    sample == p$x_sample,
+    .(chr, bin_start, bin_end, bin_mid, x_rate = modification_rate, x_N = N, x_CpGs = covered_CpGs)
+  ]
+
+  y_dt <- corr_sample_bin_df[
+    sample == p$y_sample,
+    .(chr, bin_start, bin_end, bin_mid, y_rate = modification_rate, y_N = N, y_CpGs = covered_CpGs)
+  ]
+
+  shared_dt <- merge(
+    x_dt,
+    y_dt,
+    by = c("chr", "bin_start", "bin_end", "bin_mid"),
+    all = FALSE
+  )
+
+  input_label <- as.character(p$input_amount)
+  pair_label <- as.character(p$pair_label)
+
+  pair_plot_list[[i]] <- shared_dt[
+    ,
+    `:=`(
+      input_amount = as.character(p$input_amount),
+      input_index = p$input_index,
+      input_label = input_label,
+      pair_id = p$pair_id,
+      pair_label = pair_label,
+      x_method = p$x_method,
+      y_method = p$y_method
+    )
+  ]
+
+  pair_label_list[[i]] <- data.table(
+    input_amount = as.character(p$input_amount),
+    input_index = p$input_index,
+    input_label = input_label,
+    pair_id = p$pair_id,
+    pair_label = pair_label,
+    x_method = p$x_method,
+    y_method = p$y_method,
+    n_bins = nrow(shared_dt),
+    pearson_r = if (nrow(shared_dt) >= 3) cor(shared_dt$x_rate, shared_dt$y_rate, method = "pearson") else NA_real_,
+    spearman_rho = if (nrow(shared_dt) >= 3) cor(shared_dt$x_rate, shared_dt$y_rate, method = "spearman") else NA_real_,
+    mean_abs_delta = if (nrow(shared_dt) > 0) mean(abs(shared_dt$y_rate - shared_dt$x_rate)) else NA_real_
+  )
+}
+
+pair_corr_plot_df <- rbindlist(pair_plot_list, use.names = TRUE)
+pair_corr_label <- rbindlist(pair_label_list, use.names = TRUE)
+
+input_levels <- input_order
+pair_levels <- method_pairs$pair_id
+pair_label_levels <- pair_info %>%
+  distinct(pair_id, pair_label) %>%
+  arrange(match(pair_id, pair_levels)) %>%
+  pull(pair_label)
+
+pair_corr_plot_df[, input_label := factor(input_label, levels = input_levels)]
+pair_corr_label[, input_label := factor(input_label, levels = input_levels)]
+pair_corr_plot_df[, pair_id := factor(pair_id, levels = pair_levels)]
+pair_corr_label[, pair_id := factor(pair_id, levels = pair_levels)]
+pair_corr_plot_df[, pair_label := factor(pair_label, levels = pair_label_levels)]
+pair_corr_label[, pair_label := factor(pair_label, levels = pair_label_levels)]
+pair_corr_label[, label := paste0("r = ", sprintf("%.2f", pearson_r))]
+pair_corr_label[, `:=`(x = 5, y = 96)]
+
+data.table::fwrite(
+  pair_corr_label,
+  file.path(out_table_dir, paste0("paired_", corr_chromosome_mode, "_", corr_bin_size, "bp_method_correlation_summary.tsv")),
+  sep = "\t"
+)
+
+data.table::fwrite(
+  pair_corr_plot_df,
+  file.path(out_table_dir, paste0("paired_", corr_chromosome_mode, "_", corr_bin_size, "bp_method_correlation_plot_data.tsv")),
+  sep = "\t"
+)
+
+pair_corr_label
+```
+
+```{r bin-count-scale}
+tmp_bin_plot <- ggplot(
+  pair_corr_plot_df,
+  aes(x = x_rate, y = y_rate)
+) +
+  geom_bin_2d(bins = corr_density_bins) +
+  facet_grid(pair_label ~ input_label)
+
+tmp_bin_data_all <- ggplot_build(tmp_bin_plot)$data[[1]]
+
+bin_count_min <- 1L
+display_quantile <- 0.95
+bin_count_max_display <- ceiling(
+  as.numeric(quantile(tmp_bin_data_all$count, display_quantile, na.rm = TRUE)) / 1000
+) * 1000
+bin_count_max_display <- max(bin_count_max_display, 10L)
+
+bin_count_breaks <- c(bin_count_min, bin_count_max_display)
+bin_count_labels <- c("1", scales::comma(bin_count_max_display))
+
+bin_count_labels
+```
+
+```{r plot-paired-bin-correlation}
+p_paired_bin_correlation <- ggplot(
+  pair_corr_plot_df,
+  aes(x = x_rate, y = y_rate)
+) +
+  geom_bin_2d(aes(fill = after_stat(count)), bins = corr_density_bins, alpha = 1) +
+  scale_fill_gradient(
+    low = "#F7FBFF",
+    high = method_colors["MOF-TAPS"],
+    limits = c(bin_count_min, bin_count_max_display),
+    oob = scales::squish,
+    breaks = bin_count_breaks,
+    labels = bin_count_labels,
+    name = "Bin count",
+    guide = guide_colourbar(
+      barheight = unit(2.0, "cm"),
+      barwidth = unit(0.35, "cm"),
+      ticks = TRUE,
+      frame.colour = "black"
+    )
+  ) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    color = "black",
+    linewidth = 0.42,
+    linetype = "dashed"
+  ) +
+  geom_text(
+    data = pair_corr_label,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 1,
+    size = 4.2,
+    family = font_family,
+    color = "black"
+  ) +
+  facet_grid(pair_label ~ input_label) +
+  scale_x_continuous(
+    breaks = seq(0, 100, 25),
+    labels = percent_label,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 100, 25),
+    labels = percent_label,
+    expand = expansion(mult = c(0, 0))
+  ) +
+  coord_fixed(
+    xlim = c(0, 100),
+    ylim = c(0, 100),
+    clip = "off"
+  ) +
+  labs(
+    x = "First method methylation level",
+    y = "Second method methylation level"
+  ) +
+  theme_figsi +
+  theme(
+    panel.grid.major = element_line(color = "grey85", linewidth = 0.32, linetype = "dashed"),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(size = 12, color = "black"),
+    strip.text.y = element_text(angle = 0),
+    panel.spacing.x = unit(1.6, "lines"),
+    panel.spacing.y = unit(1.2, "lines"),
+    legend.position = "right"
+  )
+
+p_paired_bin_correlation
+```
+
+```{r save-paired-bin-correlation}
+ggsave(
+  file.path(out_fig_dir, paste0("paired_", corr_chromosome_mode, "_", corr_bin_size, "bp_cutoff_", min_cov, "_method_correlation.pdf")),
+  plot = p_paired_bin_correlation,
+  width = 8.0,
+  height = 6.0
+)
+```

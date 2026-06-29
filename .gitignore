@@ -1,0 +1,20 @@
+# Ignore everything by default
+*
+
+# Allow Git to traverse directories
+!*/
+
+# Root-level files
+!.gitignore
+!README.md
+
+# analysis
+!analysis/cfDNA/script/*
+!analysis/HeLa_gDNA/script/*
+!analysis/fig_factory/*.qmd
+!analysis/fig_factory/*.ipynb
+
+# script
+!script/*.sh
+!script/*.R
+!script/*.py

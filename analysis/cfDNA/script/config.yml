@@ -1,0 +1,31 @@
+raw_dir: /home/xuyanbo/project/MOF_TAPS/raw_data/cfDNA_10x
+
+ds_dir: /home/xuyanbo/project/MOF_TAPS/analysis/cfDNA/result/01downsample
+trim_dir: /home/xuyanbo/project/MOF_TAPS/analysis/cfDNA/result/02trim
+map_dir: /home/xuyanbo/project/MOF_TAPS/analysis/cfDNA/result/03align
+dedup_dir: /home/xuyanbo/project/MOF_TAPS/analysis/cfDNA/result/04dedup
+qc_dir: /home/xuyanbo/project/MOF_TAPS/analysis/cfDNA/result/qc
+methyldackel_dir: /home/xuyanbo/project/MOF_TAPS/analysis/cfDNA/result/05methy_call
+
+reference_fasta: /home/xuyanbo/ref/methy_seq/148bp_unmodified_spikein_plus_5fc_5hmc_5cac.fa
+
+spike_in_fasta: /home/xuyanbo/ref/methy_seq/spikeins_only.fa
+spike_in_fai: /home/xuyanbo/ref/methy_seq/spikeins_only.fa.fai
+
+dbsnp_bed: /home/xuyanbo/ref/hg38/SNP/dbSNP153.BED3.sorted.bed
+centromere_bed: /home/xuyanbo/ref/hg38/centromeres/centromeres.hg38.sorted.bed
+blacklist_bed: /home/xuyanbo/ref/hg38/blacklist/hg38-blacklist.v2.bed
+
+n_reads:
+  FYM_260410_S01: 102137203
+  FYM_260410_S02: 102137203
+  FYM_260410_S03: 102137203
+  FYM_260410_S04: 102137203
+  FYM_260410_S05: 102137203
+  FYM_260410_S06: 102137203
+  FYM_260410_S07: 102137203
+  FYM_260410_S08: 102137203
+  FYM_260410_S09: 102137203
+  FYM_260410_S10: 102137203
+  FYM_260410_S11: 102137203
+  FYM_260410_S12: 102137203

@@ -1,0 +1,691 @@
+---
+title: "FigSI cfDNA 10x metrics"
+author: "Yanbo Xu"
+date: "2026-05-23"
+date-modified: last-modified
+format:
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  pdf: default
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(grid)
+library(purrr)
+library(readr)
+library(stringr)
+library(tibble)
+
+project_dir <- normalizePath("/home/xuyanbo/project/MOF_TAPS", mustWork = TRUE)
+
+knitr::opts_chunk$set(dpi = 300, fig.width = 6.5, fig.height = 2.4, dev = "cairo_pdf", dev.args = list(family = "Arial"))
+
+font_family <- "Arial"
+
+sample_id_order <- c("A1", "A2", "A3", "H1", "H2", "H3")
+method_order <- c("MOF-TAPS", "TAPS+")
+clinical_status_order <- c("AML", "Healthy")
+
+method_colors <- c(
+  "MOF-TAPS" = "#E59A2F",
+  "TAPS+"    = "#3B82C4"
+)
+
+clinical_fill <- c(
+  "Healthy" = "#78B4BC",
+  "AML"     = "#957FBB"
+)
+
+bar_width <- 0.32
+method_offset <- 0.19
+
+genome_chr <- paste0("chr", 1:22)
+
+out_fig_dir <- file.path(
+  project_dir,
+  "analysis", "fig_factory", "fig", "FigSI",
+  "cfDNA_10x_metrics"
+)
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Read pipeline metrics and save CSV
+
+```{r build-cfdna-metrics-csv}
+results_dir <- file.path(project_dir, "analysis", "cfDNA", "result")
+raw_dir <- file.path(project_dir, "raw_data")
+metrics_csv <- file.path(raw_dir, "cfDNA_10x_barplot_metrics.csv")
+
+sample_order <- paste0("FYM_260410_S", sprintf("%02d", 1:12))
+
+library_conc_values <- c(
+  15.37,
+  12.84,
+  18.06,
+  10.92,
+  17.43,
+  19.15,
+  24.63,
+  17.19,
+  21.85,
+  29.42,
+  23.07,
+  26.58
+)
+
+library_df <- tibble(
+  sample = sample_order,
+  library_conc = library_conc_values
+)
+
+# ----------------------------
+# 1. Genomic coverage from samtools coverage
+# ----------------------------
+read_samtools_genome_coverage <- function(f) {
+  sample <- basename(f) %>%
+    str_remove("\\.coverage\\.txt$")
+
+  x <- data.table::fread(f)
+  names(x) <- sub("^#", "", names(x))
+
+  required_cols <- c("rname", "startpos", "endpos", "covbases")
+  missing_cols <- setdiff(required_cols, names(x))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in samtools coverage file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x <- x %>%
+    filter(rname %in% genome_chr) %>%
+    mutate(
+      startpos = as.numeric(startpos),
+      endpos = as.numeric(endpos),
+      covbases = as.numeric(covbases),
+      region_len = endpos - startpos + 1
+    )
+
+  if (nrow(x) == 0) {
+    stop("No chr1-22 records found in samtools coverage file: ", f)
+  }
+
+  genome_length <- sum(x$region_len, na.rm = TRUE)
+  genome_covbases <- sum(x$covbases, na.rm = TRUE)
+
+  tibble(
+    sample = sample,
+    genomic_coverage = 100 * genome_covbases / genome_length
+  )
+}
+
+coverage_files <- list.files(
+  file.path(results_dir, "qc", "samtools_coverage"),
+  pattern = "\\.coverage\\.txt$",
+  full.names = TRUE
+)
+
+if (length(coverage_files) == 0) {
+  stop("No samtools coverage files found.")
+}
+
+coverage_df <- map_dfr(coverage_files, read_samtools_genome_coverage)
+
+# ----------------------------
+# 2. Covered CpGs from final TAPS-direction bedGraph
+# ----------------------------
+read_covered_cpg <- function(f) {
+  sample <- basename(f) %>%
+    str_remove("\\.minTotal3\\.filter_taps\\.summary\\.tsv$")
+
+  data.table::fread(f) %>%
+    transmute(
+      sample = sample,
+      covered_cpgs = as.numeric(covered_cpg_minTotal3)
+    )
+}
+
+covered_cpg_df <- list.files(
+  file.path(results_dir, "05methy_call", "summary"),
+  pattern = "\\.minTotal3\\.filter_taps\\.summary\\.tsv$",
+  full.names = TRUE
+) %>%
+  map_dfr(read_covered_cpg)
+
+# ----------------------------
+# 3. Duplication rate from Picard MarkDuplicates metrics
+# ----------------------------
+read_picard_duplication <- function(f) {
+  sample <- basename(f) %>%
+    str_remove("\\.metrics\\.txt$") %>%
+    str_remove("\\.dedup$")
+
+  lines <- readLines(f, warn = FALSE)
+
+  header_i <- which(str_detect(lines, "^LIBRARY\\t"))[1]
+  if (is.na(header_i)) {
+    stop("Cannot find Picard metrics header starting with LIBRARY in: ", f)
+  }
+
+  data_i <- header_i + 1
+  if (data_i > length(lines) || lines[data_i] == "") {
+    stop("Cannot find Picard metrics data row in: ", f)
+  }
+
+  x <- data.table::fread(
+    text = paste(lines[header_i], lines[data_i], sep = "\n"),
+    sep = "\t",
+    header = TRUE
+  )
+
+  if (!"PERCENT_DUPLICATION" %in% names(x)) {
+    stop("PERCENT_DUPLICATION not found in Picard metrics file: ", f)
+  }
+
+  tibble(
+    sample = sample,
+    duplication_rate = as.numeric(x$PERCENT_DUPLICATION[1])
+  )
+}
+
+dup_files <- list.files(
+  file.path(results_dir, "04dedup"),
+  pattern = "\\.metrics\\.txt$",
+  full.names = TRUE
+)
+
+if (length(dup_files) == 0) {
+  stop("No Picard MarkDuplicates metrics files found.")
+}
+
+duplication_df <- map_dfr(dup_files, read_picard_duplication)
+
+# ----------------------------
+# 4. Spike-in conversion rate
+# ----------------------------
+read_spikein_conversion <- function(f) {
+  x <- data.table::fread(f)
+
+  required_cols <- c(
+    "sample",
+    "conversion_2kb_2",
+    "conversion_2kb_3_unmodified"
+  )
+  missing_cols <- setdiff(required_cols, names(x))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in spike-in summary file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x %>%
+    transmute(
+      sample = sample,
+      conversion_2kb_2 = as.numeric(conversion_2kb_2),
+      conversion_2kb_3 = as.numeric(conversion_2kb_3_unmodified)
+    )
+}
+
+spikein_files <- list.files(
+  file.path(results_dir, "qc", "spikein_prededup_methyldackel"),
+  pattern = "\\.prededup\\.spikein\\.mergeContext\\.summary\\.tsv$",
+  full.names = TRUE
+)
+
+if (length(spikein_files) == 0) {
+  stop("No spike-in conversion summary files found.")
+}
+
+spikein_df <- map_dfr(spikein_files, read_spikein_conversion)
+
+# ----------------------------
+# 5. Mapping efficiency
+# ----------------------------
+read_mapping_efficiency <- function(f) {
+  x <- data.table::fread(f)
+
+  required_cols <- c("sample", "mapping_efficiency")
+  missing_cols <- setdiff(required_cols, names(x))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in mapping efficiency file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x %>%
+    transmute(
+      sample = sample,
+      mapping_efficiency = as.numeric(mapping_efficiency)
+    )
+}
+
+mapping_files <- list.files(
+  file.path(results_dir, "qc", "mapping_efficiency"),
+  pattern = "\\.mapping_efficiency\\.tsv$",
+  full.names = TRUE
+)
+
+mapping_files <- mapping_files[
+  !basename(mapping_files) %in% "mapping_efficiency.all.tsv"
+]
+
+if (length(mapping_files) == 0) {
+  stop("No mapping efficiency files found.")
+}
+
+mapping_df <- map_dfr(mapping_files, read_mapping_efficiency)
+
+# ----------------------------
+# 6. Merge, keep 7 columns, and save CSV
+# ----------------------------
+summary_df <- library_df %>%
+  left_join(spikein_df, by = "sample") %>%
+  left_join(coverage_df, by = "sample") %>%
+  left_join(covered_cpg_df, by = "sample") %>%
+  left_join(duplication_df, by = "sample") %>%
+  left_join(mapping_df, by = "sample") %>%
+  select(
+    sample,
+    library_conc,
+    conversion_2kb_2,
+    conversion_2kb_3,
+    genomic_coverage,
+    covered_cpgs,
+    duplication_rate,
+    mapping_efficiency
+  )
+
+write.csv(
+  summary_df,
+  metrics_csv,
+  row.names = FALSE
+)
+
+summary_df
+```
+
+# Metadata and benchmark table
+
+```{r sample-meta}
+meta <- tibble::tibble(
+  sample = c(
+    "FYM_260410_S01",
+    "FYM_260410_S02",
+    "FYM_260410_S03",
+    "FYM_260410_S04",
+    "FYM_260410_S05",
+    "FYM_260410_S06",
+    "FYM_260410_S07",
+    "FYM_260410_S08",
+    "FYM_260410_S09",
+    "FYM_260410_S10",
+    "FYM_260410_S11",
+    "FYM_260410_S12"
+  ),
+  sample_id = c(
+    "H1",
+    "H2",
+    "H3",
+    "A1",
+    "A2",
+    "A3",
+    "H1",
+    "H2",
+    "H3",
+    "A1",
+    "A2",
+    "A3"
+  ),
+  clinical_status = c(
+    "Healthy",
+    "Healthy",
+    "Healthy",
+    "AML",
+    "AML",
+    "AML",
+    "Healthy",
+    "Healthy",
+    "Healthy",
+    "AML",
+    "AML",
+    "AML"
+  ),
+  method = c(
+    "TAPS+",
+    "TAPS+",
+    "TAPS+",
+    "TAPS+",
+    "TAPS+",
+    "TAPS+",
+    "MOF-TAPS",
+    "MOF-TAPS",
+    "MOF-TAPS",
+    "MOF-TAPS",
+    "MOF-TAPS",
+    "MOF-TAPS"
+  )
+) %>%
+  mutate(
+    sample_id = factor(sample_id, levels = sample_id_order),
+    clinical_status = factor(clinical_status, levels = clinical_status_order),
+    method = factor(method, levels = method_order)
+  )
+
+meta
+```
+
+```{r read-benchmark-csv}
+metrics_df <- read_csv(
+  metrics_csv,
+  col_names = TRUE,
+  show_col_types = FALSE
+)
+
+benchmark_df <- meta %>%
+  left_join(metrics_df, by = "sample") %>%
+  mutate(
+    across(
+      c(
+        library_conc,
+        conversion_2kb_2,
+        conversion_2kb_3,
+        genomic_coverage,
+        covered_cpgs,
+        duplication_rate,
+        mapping_efficiency
+      ),
+      as.numeric
+    ),
+    conversion_2kb_2_pct = 100 * conversion_2kb_2,
+    conversion_2kb_3_pct = 100 * conversion_2kb_3,
+    covered_cpgs_m = covered_cpgs / 1e6,
+    duplication_pct = 100 * duplication_rate,
+    mapping_efficiency_pct = 100 * mapping_efficiency,
+    box_group = factor(
+      paste(clinical_status, method, sep = "__"),
+      levels = c(
+        "AML__MOF-TAPS",
+        "AML__TAPS+",
+        "Healthy__MOF-TAPS",
+        "Healthy__TAPS+"
+      )
+    ),
+    x_plot = as.numeric(box_group),
+    pair_id = interaction(clinical_status, sample_id, drop = TRUE)
+  )
+
+benchmark_df
+```
+
+# Plot helpers
+
+```{r plot-helper}
+theme_benchmark <- function(show_legend = TRUE,
+                            legend_position = "top",
+                            legend_direction = "horizontal") {
+  theme_classic(base_size = 12, base_family = font_family) +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.4),
+      axis.ticks = element_line(color = "black", linewidth = 0.4),
+      axis.ticks.length = unit(0.16, "cm"),
+      axis.text.x = element_text(size = 12, color = "black", margin = margin(t = 4)),
+      axis.text.y = element_text(size = 12, color = "black"),
+      axis.title.x = element_text(size = 12, color = "black"),
+      axis.title.y = element_text(size = 12, color = "black", margin = margin(r = 8)),
+
+      legend.position = if (show_legend) legend_position else "none",
+      legend.direction = legend_direction,
+      legend.justification = "center",
+
+      legend.text = element_text(size = 12, color = "black", margin = margin(l = 2)),
+      legend.title = element_blank(),
+      legend.key = element_blank(),
+      legend.key.height = unit(0.20, "cm"),
+      legend.key.spacing.x = unit(0.20, "cm"),
+      legend.key.spacing.y = unit(0.05, "cm"),
+
+      legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
+      legend.box.margin = margin(t = 0, r = 0, b = 2, l = 0),
+      legend.box.spacing = unit(0.12, "cm"),
+
+      legend.background = element_blank(),
+      legend.box.background = element_blank(),
+      legend.box = "horizontal",
+
+      plot.margin = margin(5, 10, 5, 10)
+    )
+}
+
+status_rect_df <- tibble::tibble(
+  clinical_status = factor(c("AML", "Healthy"), levels = clinical_status_order),
+  xmin = c(0.5, 2.5),
+  xmax = c(2.5, 4.5),
+  xmid = c(1.5, 3.5),
+  label = c("AML", "Healthy"),
+  fill_color = unname(clinical_fill[c("AML", "Healthy")])
+)
+
+plot_metric_bar <- function(df,
+                            y_var,
+                            y_label,
+                            show_legend = TRUE,
+                            legend_position = "top",
+                            legend_direction = "horizontal",
+                            y_limits = NULL,
+                            y_breaks = waiver(),
+                            error_type = c("sem", "sd", "ci95")) {
+  error_type <- match.arg(error_type)
+
+  bar_df <- df |>
+    dplyr::group_by(x_plot, box_group, method) |>
+    dplyr::summarise(
+      n = sum(!is.na(.data[[y_var]])),
+      mean_value = mean(.data[[y_var]], na.rm = TRUE),
+      sd_value = stats::sd(.data[[y_var]], na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      sem_value = dplyr::if_else(n > 1, sd_value / sqrt(n), 0),
+      ci95_value = dplyr::if_else(
+        n > 1,
+        stats::qt(0.975, df = n - 1) * sem_value,
+        0
+      ),
+      error_value = switch(
+        error_type,
+        sem = sem_value,
+        sd = sd_value,
+        ci95 = ci95_value
+      ),
+      error_value = tidyr::replace_na(error_value, 0),
+      ymin_error = mean_value - error_value,
+      ymax_error = mean_value + error_value
+    )
+
+  raw_max <- max(df[[y_var]], na.rm = TRUE)
+  error_max <- max(bar_df$ymax_error, na.rm = TRUE)
+
+  ymax <- if (is.null(y_limits)) {
+    max(raw_max, error_max, na.rm = TRUE) * 1.08
+  } else {
+    y_limits[2]
+  }
+
+  ymin <- if (is.null(y_limits)) 0 else y_limits[1]
+
+  status_ymin <- ymin - 0.12 * (ymax - ymin)
+  status_ymax <- ymin - 0.04 * (ymax - ymin)
+  status_label_y <- ymin - 0.08 * (ymax - ymin)
+
+  ggplot(df, aes(x = x_plot, y = .data[[y_var]])) +
+    geom_col(
+      data = bar_df,
+      aes(x = x_plot, y = mean_value, fill = method, group = box_group),
+      inherit.aes = FALSE,
+      width = 0.45,
+      alpha = 0.72,
+      color = "black",
+      linewidth = 0.4
+    ) +
+    geom_errorbar(
+      data = bar_df,
+      aes(
+        x = x_plot,
+        ymin = ymin_error,
+        ymax = ymax_error,
+        group = box_group
+      ),
+      inherit.aes = FALSE,
+      width = 0.16,
+      linewidth = 0.45,
+      color = "black"
+    ) +
+    geom_point(
+      aes(fill = method),
+      position = position_jitter(width = 0.12, height = 0),
+      shape = 21,
+      size = 2.4,
+      color = "black",
+      stroke = 0.35
+    ) +
+    geom_rect(
+      data = status_rect_df,
+      aes(xmin = xmin, xmax = xmax, ymin = status_ymin, ymax = status_ymax),
+      inherit.aes = FALSE,
+      fill = status_rect_df$fill_color,
+      color = NA,
+      alpha = 0.70,
+      show.legend = FALSE
+    ) +
+    geom_text(
+      data = status_rect_df,
+      aes(x = xmid, y = status_label_y, label = label),
+      inherit.aes = FALSE,
+      size = 3.2,
+      family = font_family,
+      color = "black"
+    ) +
+    scale_fill_manual(
+      values = c(method_colors, clinical_fill),
+      breaks = method_order,
+      limits = method_order,
+      drop = FALSE
+    ) +
+    scale_x_continuous(
+      breaks = 1:4,
+      labels = c("", "", "", ""),
+      expand = expansion(mult = c(0.04, 0.04))
+    ) +
+    scale_y_continuous(
+      expand = expansion(mult = c(0, 0)),
+      breaks = y_breaks
+    ) +
+    coord_cartesian(ylim = c(ymin, ymax), clip = "off") +
+    labs(x = NULL, y = y_label) +
+    theme_benchmark(
+      show_legend = show_legend,
+      legend_position = legend_position,
+      legend_direction = legend_direction
+    ) +
+    theme(plot.margin = margin(5, 10, 5, 10))
+}
+```
+
+# Barplots
+
+```{r build-plots}
+p_library <- plot_metric_bar(
+  benchmark_df,
+  y_var = "library_conc",
+  y_label = expression("Library concentration (ng " * mu * "L"^{-1} * ")"),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_conversion_2kb_2 <- plot_metric_bar(
+  benchmark_df,
+  y_var = "conversion_2kb_2_pct",
+  y_label = "Fraction of converted 5mC (%)",
+  y_limits = c(0, 100),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_conversion_2kb_3 <- plot_metric_bar(
+  benchmark_df,
+  y_var = "conversion_2kb_3_pct",
+  y_label = "Fraction of converted C (%)",
+  y_limits = c(0, 1),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_genomic_coverage <- plot_metric_bar(
+  benchmark_df,
+  y_var = "genomic_coverage",
+  y_label = "Genomic coverage (%)",
+  y_limits = c(0, 100),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_covered_cpgs <- plot_metric_bar(
+  benchmark_df,
+  y_var = "covered_cpgs_m",
+  y_label = "Covered CpGs (millions)",
+  y_limits = c(0, 16),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_duplication <- plot_metric_bar(
+  benchmark_df,
+  y_var = "duplication_pct",
+  y_label = "Duplication rate (%)",
+  y_limits = c(0, 40),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_mapping_efficiency <- plot_metric_bar(
+  benchmark_df,
+  y_var = "mapping_efficiency_pct",
+  y_label = "Mapping efficiency (%)",
+  y_limits = c(0, 100),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_library
+p_conversion_2kb_2
+p_conversion_2kb_3
+p_genomic_coverage
+p_covered_cpgs
+p_duplication
+p_mapping_efficiency
+```
+
+```{r save-plots}
+ggsave(file.path(out_fig_dir, "library_concentration.pdf"), p_library, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "conversion_rate.pdf"), p_conversion_2kb_2, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "false_positive_rate.pdf"), p_conversion_2kb_3, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "genomic_coverage.pdf"), p_genomic_coverage, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "covered_cpg.pdf"), p_covered_cpgs, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "duplication_rate.pdf"), p_duplication, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "mapping_efficiency.pdf"), p_mapping_efficiency, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+```

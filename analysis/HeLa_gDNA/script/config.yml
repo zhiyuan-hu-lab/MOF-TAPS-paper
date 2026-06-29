@@ -1,0 +1,28 @@
+raw_dir: /home/xuyanbo/project/MOF_TAPS/raw_data/HeLa_gDNA_10x
+
+ds_dir: /home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result/01downsample
+trim_dir: /home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result/02trim
+map_dir: /home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result/03align
+dedup_dir: /home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result/04dedup
+qc_dir: /home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result/qc
+methyldackel_dir: /home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result/05methy_call
+
+reference_fasta: /home/xuyanbo/ref/methy_seq/148bp_unmodified_spikein_plus_5fc_5hmc_5cac.fa
+
+spike_in_fasta: /home/xuyanbo/ref/methy_seq/spikeins_only.fa
+spike_in_fai: /home/xuyanbo/ref/methy_seq/spikeins_only.fa.fai
+
+dbsnp_bed: /home/xuyanbo/ref/hg38/SNP/dbSNP153.BED3.sorted.bed
+centromere_bed: /home/xuyanbo/ref/hg38/centromeres/centromeres.hg38.sorted.bed
+blacklist_bed: /home/xuyanbo/ref/hg38/blacklist/hg38-blacklist.v2.bed
+
+n_reads:
+  fym260106_S01: 104391474
+  fym260106_S02: 104391474
+  fym260106_S03: 104391474
+  fym260106_S04: 104391474
+  fym260106_S05: 104391474
+  fym260106_S06: 104391474
+  fym260124_S04: 104391474
+  fym260124_S05: 104391474
+  fym260124_S06: 104391474

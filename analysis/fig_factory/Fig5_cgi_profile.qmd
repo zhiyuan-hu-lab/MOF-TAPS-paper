@@ -1,0 +1,447 @@
+---
+title: "Fig5 CGI profile"
+format:
+  html:
+    self-contained: true
+editor: visual
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+# Setup
+
+```{r setup}
+library(data.table)
+library(dplyr)
+library(purrr)
+library(stringr)
+library(ggplot2)
+library(tibble)
+library(readr)
+library(ggh4x)
+
+project_dir <- "/home/xuyanbo/project/MOF_TAPS"
+
+knitr::opts_chunk$set(dpi = 300, fig.width = 6.5, fig.height = 3, dev = "cairo_pdf", dev.args = list(family = "Arial"))
+
+font_family <- "Arial"
+
+cgi_dir <- file.path(project_dir, "analysis", "fig_factory", "fig", "Fig5", "cgi")
+methylation_dir <- file.path(cgi_dir, "methylation_bins")
+coverage_dir <- file.path(cgi_dir, "coverage_bins")
+coverage_dir <- file.path(cgi_dir, "coverage_bins")
+
+out_table_dir <- cgi_dir
+out_fig_dir <- cgi_dir
+
+dir.create(out_table_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+# Sample metadata
+
+```{r sample-meta}
+input_order <- c("1 ng", "100 pg", "10 pg")
+method_order <- c("MOF-TAPS", "TAPS", "TAPS+")
+
+meta <- tibble(
+  sample = c(
+    "fym260106_S01", "fym260106_S02", "fym260106_S03",
+    "fym260106_S04", "fym260106_S05", "fym260106_S06",
+    "fym260124_S04", "fym260124_S05", "fym260124_S06"
+  ),
+  input_amount = factor(
+    c(
+      "10 pg", "100 pg", "1 ng",
+      "10 pg", "100 pg", "1 ng",
+      "10 pg", "100 pg", "1 ng"
+    ),
+    levels = input_order
+  ),
+  method = factor(
+    c(
+      "TAPS", "TAPS", "TAPS",
+      "TAPS+", "TAPS+", "TAPS+",
+      "MOF-TAPS", "MOF-TAPS", "MOF-TAPS"
+    ),
+    levels = method_order
+  )
+)
+
+meta
+```
+
+# Theme
+
+```{r theme}
+method_colors <- c(
+  "MOF-TAPS" = "#E59A2F",
+  "TAPS+" = "#3B82C4",
+  "TAPS" = "#63B34C"
+)
+
+theme_cgi <- function(show_legend = TRUE) {
+  p <- theme_classic(base_size = 14, base_family = font_family) +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.4),
+      axis.ticks = element_line(color = "black", linewidth = 0.4),
+      axis.ticks.length = unit(0.16, "cm"),
+      axis.text.x = element_text(size = 14, color = "black", margin = margin(t = 4), hjust = 1, vjust = 1),
+      axis.text.y = element_text(size = 14, color = "black"),
+      axis.title.x = element_text(size = 14, color = "black", margin = margin(t = 8)),
+      axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 8)),
+      strip.background = element_blank(),
+      strip.text = element_text(size = 14, color = "black", margin = margin(b = 8)),
+      legend.position = "right",
+      legend.title = element_blank(),
+      legend.text = element_text(size = 14, color = "black", margin = margin(l = 2)),
+      legend.key.height = unit(0.26, "cm"),
+      legend.key.width = unit(0.65, "cm"),
+      legend.key = element_blank(),
+      legend.background = element_blank(),
+      legend.box.background = element_blank(),
+      plot.margin = margin(10, 10, 10, 10),
+      panel.spacing.x = unit(1.2, "lines")
+    )
+
+  if (!show_legend) {
+    p <- p + theme(legend.position = "none")
+  }
+
+  p
+}
+```
+
+# Read CGI methylation bins
+
+The methylation bin tables are expected to come from `bedtools map` on the CGI profile bins and final filtered TAPS-direction bedGraph. With a 7-column CGI-bin BED, the output should have 11 columns:
+
+``` text
+chrom  start  end  cgi_id  region  bin_index  profile_bin  mean_pct  sum_positive  sum_total  cpg_count
+```
+
+```{r read-methylation-bins}
+read_methylation_bins <- function(sample) {
+  f <- file.path(methylation_dir, paste0(sample, ".CGI_bins.methylation.tsv"))
+
+  data.table::fread(f, header = FALSE, sep = "\t", na.strings = c(".", "NA")) %>%
+    as_tibble() %>%
+    transmute(
+      sample = sample,
+      chrom = V1,
+      start = as.integer(V2),
+      end = as.integer(V3),
+      cgi_id = V4,
+      region = V5,
+      bin_index = as.integer(V6),
+      profile_bin = as.integer(V7),
+      mean_taps_readout_pct = as.numeric(V8),
+      taps_positive = as.numeric(V9),
+      total_informative = as.numeric(V10),
+      cpg_count = as.numeric(V11),
+      weighted_taps_readout_pct = if_else(
+        !is.na(total_informative) & total_informative > 0,
+        100 * taps_positive / total_informative,
+        NA_real_
+      )
+    )
+}
+
+methylation_bin_df <- map_dfr(meta$sample, read_methylation_bins) %>%
+  left_join(meta, by = "sample") %>%
+  mutate(
+    input_amount = factor(input_amount, levels = input_order),
+    method = factor(method, levels = method_order)
+  )
+
+methylation_bin_df
+```
+
+# Read CGI coverage bins
+
+The coverage bin tables are expected to come from per-base depth and `bedtools map`. With a 7-column CGI-bin BED, the output should have 8 columns:
+
+``` text
+chrom  start  end  cgi_id  region  bin_index  profile_bin  coverage_depth
+```
+
+```{r read-coverage-bins}
+read_coverage_bins <- function(sample) {
+  f <- file.path(coverage_dir, paste0(sample, ".CGI_bins.coverage.tsv"))
+
+  x <- fread(
+    f,
+    sep = "\t",
+    header = FALSE,
+    col.names = c(
+      "chrom", "start", "end", "cgi_id", "region", "bin_index", "profile_bin",
+      "coverage_depth"
+    )
+  )
+
+  x %>%
+    as_tibble() %>%
+    mutate(
+      sample = sample,
+      start = as.integer(start),
+      end = as.integer(end),
+      bin_index = as.integer(bin_index),
+      profile_bin = as.integer(profile_bin),
+      coverage_depth = as.numeric(coverage_depth)
+    ) %>%
+    select(sample, everything())
+}
+
+coverage_bin_df <- map_dfr(meta$sample, read_coverage_bins) %>%
+  left_join(meta, by = "sample") %>%
+  mutate(
+    input_amount = factor(input_amount, levels = input_order),
+    method = factor(method, levels = method_order)
+  )
+
+coverage_bin_df
+```
+
+# Summarize CGI profiles
+
+For the methods-like profile, each CGI-bin value is first computed by `bedtools map`, then values from the same relative `profile_bin` are averaged across all CGI bins. For methylation, `mean_taps_readout_pct` is the direct mean of CpG-level TAPS readout within each CGI bin; `weighted_taps_readout_pct` is retained as a read-count-weighted alternative.
+
+```{r summarize-profiles}
+methylation_profile_df <- methylation_bin_df %>%
+  group_by(input_amount, method, profile_bin) %>%
+  summarise(
+    n_bins = sum(!is.na(mean_taps_readout_pct)),
+    mean_taps_readout_pct = mean(mean_taps_readout_pct, na.rm = TRUE),
+    weighted_taps_readout_pct = mean(weighted_taps_readout_pct, na.rm = TRUE),
+    mean_cpg_count = mean(cpg_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(input_amount, method, profile_bin)
+
+coverage_profile_df <- coverage_bin_df %>%
+  group_by(input_amount, method, profile_bin) %>%
+  summarise(
+    n_bins = sum(!is.na(coverage_depth)),
+    mean_coverage_depth = mean(coverage_depth, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(input_amount, method, profile_bin)
+
+write.csv(
+  methylation_profile_df,
+  file.path(out_table_dir, "HeLa_CGI_methylation_profile.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  coverage_profile_df,
+  file.path(out_table_dir, "HeLa_CGI_coverage_profile.csv"),
+  row.names = FALSE
+)
+
+methylation_profile_df
+coverage_profile_df
+```
+
+```{r}
+methylation_profile_df <- fread(file.path(out_table_dir, "HeLa_CGI_methylation_profile.csv"))
+
+coverage_profile_df <- fread(file.path(out_table_dir, "HeLa_CGI_coverage_profile.csv"))
+```
+
+# Plot helper
+
+```{r plot-helper}
+profile_x_breaks <- c(1, 50.5, 70.5, 120)
+profile_x_labels <- c("", "", "", "")
+
+profile_label_df <- data.frame(
+  profile_bin = c(1, 60.5, 120),
+  y = -Inf,
+  label = c("-4 kb", "CGI", "+4 kb"),
+  hjust = c(0, 0.5, 1)
+)
+
+plot_cgi_profile <- function(plot_df,
+                             y_col,
+                             y_label,
+                             show_legend = TRUE,
+                             y_limits = NULL,
+                             panel_y_limits = NULL,
+                             panel_y_breaks = NULL,
+                             y_breaks = waiver()) {
+  plot_df <- plot_df %>%
+    mutate(
+      input_amount = factor(input_amount, levels = input_order),
+      method = factor(method, levels = method_order)
+    )
+
+  get_panel_breaks <- function(panel_name) {
+    if (is.null(panel_y_breaks)) {
+      return(y_breaks)
+    }
+
+    if (!panel_name %in% names(panel_y_breaks)) {
+      return(y_breaks)
+    }
+
+    panel_y_breaks[[panel_name]]
+  }
+
+  p <- ggplot(
+    plot_df,
+    aes(x = profile_bin, y = .data[[y_col]], color = method, group = method)
+  ) +
+    geom_line(linewidth = 0.75, na.rm = TRUE) +
+    geom_vline(
+      xintercept = c(50.5, 70.5),
+      linetype = "dashed",
+      linewidth = 0.35,
+      color = "grey40"
+    ) +
+    geom_text(
+      data = profile_label_df,
+      aes(
+        x = profile_bin,
+        y = y,
+        label = label,
+        hjust = hjust
+      ),
+      inherit.aes = FALSE,
+      vjust = 2.2,
+      size = 4.8,
+      color = "black"
+    ) +
+    facet_wrap(~ input_amount, nrow = 1, scales = "free_y") +
+    scale_color_manual(
+      values = method_colors,
+      breaks = method_order,
+      limits = method_order,
+      drop = FALSE,
+      name = NULL
+    ) +
+    guides(
+      color = guide_legend(
+        nrow = 1,
+        byrow = TRUE
+      )
+    ) +
+    scale_x_continuous(
+      breaks = profile_x_breaks,
+      labels = profile_x_labels,
+      limits = c(1, 120),
+      expand = expansion(mult = c(0.01, 0.01))
+    ) +
+    scale_y_continuous(
+      limits = function(lims) {
+        c(0, floor(lims[2]) + 1)
+      },
+      breaks = y_breaks,
+      expand = expansion(mult = c(0, 0))
+    )
+
+  if (!is.null(panel_y_limits)) {
+    p <- p +
+      ggh4x::facetted_pos_scales(
+        y = lapply(names(panel_y_limits), function(panel_name) {
+          rlang::new_formula(
+            lhs = rlang::expr(input_amount == !!panel_name),
+            rhs = scale_y_continuous(
+              limits = panel_y_limits[[panel_name]],
+              breaks = get_panel_breaks(panel_name),
+              expand = expansion(mult = c(0, 0))
+            )
+          )
+        })
+      )
+  }
+
+  p <- p +
+    labs(x = NULL, y = y_label) +
+    theme_cgi(show_legend = show_legend) +
+    theme(
+      plot.margin = margin(10, 10, 10, 10),
+      legend.position = if (show_legend) "top" else "none",
+      legend.justification = "center",
+      legend.direction = "horizontal",
+      legend.box = "horizontal",
+      legend.box.just = "center",
+      legend.margin = margin(2, 2, 2, 2),
+      legend.box.margin = margin(0, 0, 0, 0),
+      panel.spacing.x = unit(0.4, "cm")
+    )
+
+  if (is.null(panel_y_limits) && !is.null(y_limits)) {
+    p <- p + coord_cartesian(ylim = y_limits, clip = "off")
+  } else {
+    p <- p + coord_cartesian(clip = "off")
+  }
+
+  p
+}
+```
+
+# Methylation level around CGI
+
+```{r plot-methylation}
+p_cgi_methylation <- plot_cgi_profile(
+  methylation_profile_df,
+  y_col = "mean_taps_readout_pct",
+  y_label = "Average methylation level (%)",
+  show_legend = TRUE,
+  panel_y_limits = list(
+    "1 ng" = c(0,80),
+    "100 pg" = c (0,80),
+    "10 pg" = c(0,80)
+  )
+)
+
+p_cgi_methylation
+```
+
+```{r save-methylation}
+ggsave(
+  file.path(out_fig_dir, "HeLa_CGI_methylation_level_profile.pdf"),
+  p_cgi_methylation,
+  width = 8.7,
+  height = 3.4,
+  device = cairo_pdf
+)
+```
+
+# Coverage depth around CGI
+
+```{r plot-coverage}
+p_cgi_coverage <- plot_cgi_profile(
+  coverage_profile_df,
+  y_col = "mean_coverage_depth",
+  y_label = "Average coverage",
+  show_legend = TRUE,
+  panel_y_limits = list(
+    "1 ng" = c(0, 15),
+    "100 pg" = c (0, 8),
+    "10 pg" = c(0, 2)
+  ),
+  panel_y_breaks = list(
+    "1 ng" = seq(0, 15, 3),
+    "100 pg" = seq(0, 8, 2),
+    "10 pg" = seq(0, 2, 0.5)
+  ),  
+)
+
+p_cgi_coverage
+```
+
+```{r save-coverage}
+ggsave(
+  file.path(out_fig_dir, "HeLa_CGI_coverage_depth_profile.pdf"),
+  p_cgi_coverage,
+  width = 8.7,
+  height = 3.4,
+  device = cairo_pdf
+)
+```
+

@@ -1,0 +1,534 @@
+---
+title: "Fig5 HeLa gDNA benchmark"
+author: "Yanbo Xu"
+date: "2026-03-27"
+date-modified: last-modified
+format: 
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  pdf: default
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(dplyr)
+library(ggplot2)
+library(grid)
+library(patchwork)
+library(readr)
+library(tibble)
+
+project_dir <- normalizePath("/home/xuyanbo/project/MOF_TAPS", mustWork = TRUE)
+
+knitr::opts_chunk$set(dpi = 300, fig.width = 6.5, fig.height = 3.2, dev = "cairo_pdf", dev.args = list(family = "Arial"))
+
+font_family <- "Arial"
+
+input_order <- c("1 ng", "100 pg", "10 pg")
+method_order <- c("MOF-TAPS", "TAPS", "TAPS+")
+
+method_colors <- c(
+  "MOF-TAPS" = "#E59A2F",
+  "TAPS"     = "#63B34C",
+  "TAPS+"    = "#3B82C4"
+)
+
+out_fig_dir <- file.path(project_dir, "analysis", "fig_factory", "fig", "Fig5")
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+
+```{r}
+library(data.table)
+library(dplyr)
+library(stringr)
+library(purrr)
+library(readr)
+
+results_dir <- "/home/xuyanbo/project/MOF_TAPS/analysis/HeLa_gDNA/result"
+raw_dir <- "/home/xuyanbo/project/MOF_TAPS/raw_data"
+
+genome_chr <- paste0("chr", 1:22)
+
+sample_order <- c(
+  "fym260106_S01",
+  "fym260106_S02",
+  "fym260106_S03",
+  "fym260106_S04",
+  "fym260106_S05",
+  "fym260106_S06",
+  "fym260124_S04",
+  "fym260124_S05",
+  "fym260124_S06"
+)
+
+library_conc_values <- c(
+  4.27,
+  3.04,
+  3.14,
+  8.65,
+  7.65,
+  5.60,
+  10.85,
+  9.10,
+  11.60
+)
+
+library_df <- tibble(
+  sample = sample_order,
+  library_conc = library_conc_values
+)
+
+# ----------------------------
+# 1. Genomic coverage from samtools coverage
+# ----------------------------
+read_samtools_genome_coverage <- function(f) {
+  sample <- basename(f) %>%
+    str_remove("\\.coverage\\.txt$")
+
+  x <- data.table::fread(f)
+  names(x) <- sub("^#", "", names(x))
+
+  required_cols <- c("rname", "startpos", "endpos", "covbases")
+  missing_cols <- setdiff(required_cols, names(x))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in samtools coverage file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x <- x %>%
+    filter(rname %in% genome_chr) %>%
+    mutate(
+      startpos = as.numeric(startpos),
+      endpos = as.numeric(endpos),
+      covbases = as.numeric(covbases),
+      region_len = endpos - startpos + 1
+    )
+
+  if (nrow(x) == 0) {
+    stop("No chr1-22 records found in samtools coverage file: ", f)
+  }
+
+  genome_length <- sum(x$region_len, na.rm = TRUE)
+  genome_covbases <- sum(x$covbases, na.rm = TRUE)
+
+  tibble(
+    sample = sample,
+    genomic_coverage = 100 * genome_covbases / genome_length
+  )
+}
+
+coverage_files <- list.files(
+  file.path(results_dir, "qc", "samtools_coverage"),
+  pattern = "\\.coverage\\.txt$",
+  full.names = TRUE
+)
+
+if (length(coverage_files) == 0) {
+  stop("No samtools coverage files found.")
+}
+
+coverage_df <- map_dfr(coverage_files, read_samtools_genome_coverage)
+
+# ----------------------------
+# 2. Covered CpGs from final TAPS-direction bedGraph
+# ----------------------------
+read_covered_cpg <- function(f) {
+  sample <- basename(f) %>%
+    str_remove("\\.minTotal3\\.filter_taps\\.summary\\.tsv$")
+
+  data.table::fread(f) %>%
+    transmute(
+      sample = sample,
+      covered_cpgs = as.numeric(covered_cpg_minTotal3)
+    )
+}
+
+covered_cpg_df <- list.files(
+  file.path(results_dir, "05methy_call", "summary"),
+  pattern = "\\.minTotal3\\.filter_taps\\.summary\\.tsv$",
+  full.names = TRUE
+) %>%
+  map_dfr(read_covered_cpg)
+
+# ----------------------------
+# 3. Duplication rate from Picard MarkDuplicates metrics
+# ----------------------------
+read_picard_duplication <- function(f) {
+  sample <- basename(f) %>%
+    str_remove("\\.metrics\\.txt$") %>%
+    str_remove("\\.dedup$")
+
+  lines <- readLines(f, warn = FALSE)
+
+  header_i <- which(str_detect(lines, "^LIBRARY\\t"))[1]
+  if (is.na(header_i)) {
+    stop("Cannot find Picard metrics header starting with LIBRARY in: ", f)
+  }
+
+  data_i <- header_i + 1
+  if (data_i > length(lines) || lines[data_i] == "") {
+    stop("Cannot find Picard metrics data row in: ", f)
+  }
+
+  x <- data.table::fread(
+    text = paste(lines[header_i], lines[data_i], sep = "\n"),
+    sep = "\t",
+    header = TRUE
+  )
+
+  if (!"PERCENT_DUPLICATION" %in% names(x)) {
+    stop("PERCENT_DUPLICATION not found in Picard metrics file: ", f)
+  }
+
+  tibble(
+    sample = sample,
+    duplication_rate = as.numeric(x$PERCENT_DUPLICATION[1])
+  )
+}
+
+dup_files <- list.files(
+  file.path(results_dir, "04dedup"),
+  pattern = "\\.metrics\\.txt$",
+  full.names = TRUE
+)
+
+if (length(dup_files) == 0) {
+  stop("No Picard MarkDuplicates metrics files found.")
+}
+
+duplication_df <- map_dfr(dup_files, read_picard_duplication)
+
+# ----------------------------
+# 4. Spike-in conversion rate
+# ----------------------------
+read_spikein_conversion <- function(f) {
+  x <- data.table::fread(f)
+
+  required_cols <- c(
+    "sample",
+    "conversion_2kb_2",
+    "conversion_2kb_3_unmodified"
+  )
+  missing_cols <- setdiff(required_cols, names(x))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in spike-in summary file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x %>%
+    transmute(
+      sample = sample,
+      conversion_2kb_2 = as.numeric(conversion_2kb_2),
+      conversion_2kb_3 = as.numeric(conversion_2kb_3_unmodified)
+    )
+}
+
+spikein_files <- list.files(
+  file.path(results_dir, "qc", "spikein_prededup_methyldackel"),
+  pattern = "\\.prededup\\.spikein\\.mergeContext\\.summary\\.tsv$",
+  full.names = TRUE
+)
+
+if (length(spikein_files) == 0) {
+  stop("No spike-in conversion summary files found.")
+}
+
+spikein_df <- map_dfr(spikein_files, read_spikein_conversion)
+
+# ----------------------------
+# 5. Mapping efficiency
+# ----------------------------
+read_mapping_efficiency <- function(f) {
+  x <- data.table::fread(f)
+
+  required_cols <- c("sample", "mapping_efficiency")
+  missing_cols <- setdiff(required_cols, names(x))
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in mapping efficiency file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x %>%
+    transmute(
+      sample = sample,
+      mapping_efficiency = as.numeric(mapping_efficiency)
+    )
+}
+
+mapping_files <- list.files(
+  file.path(results_dir, "qc", "mapping_efficiency"),
+  pattern = "\\.mapping_efficiency\\.tsv$",
+  full.names = TRUE
+)
+
+mapping_files <- mapping_files[
+  !basename(mapping_files) %in% "mapping_efficiency.all.tsv"
+]
+
+if (length(mapping_files) == 0) {
+  stop("No mapping efficiency files found.")
+}
+
+mapping_df <- map_dfr(mapping_files, read_mapping_efficiency)
+
+# ----------------------------
+# 6. Merge, keep 7 columns, and save CSV
+# ----------------------------
+summary_df <- library_df %>%
+  left_join(spikein_df, by = "sample") %>%
+  left_join(coverage_df, by = "sample") %>%
+  left_join(covered_cpg_df, by = "sample") %>%
+  left_join(duplication_df, by = "sample") %>%
+  left_join(mapping_df, by = "sample") %>%
+  select(
+    sample,
+    library_conc,
+    conversion_2kb_2,
+    conversion_2kb_3,
+    genomic_coverage,
+    covered_cpgs,
+    duplication_rate,
+    mapping_efficiency
+  )
+
+write.csv(
+  summary_df,
+  file.path(raw_dir, "HeLa_gDNA_barplot_metrics.csv"),
+  row.names = FALSE
+)
+
+summary_df
+```
+
+# Metadata and benchmark table
+
+```{r sample-meta}
+meta <- tibble::tibble(
+  sample = c(
+    "fym260106_S01",
+    "fym260106_S02",
+    "fym260106_S03",
+    "fym260106_S04",
+    "fym260106_S05",
+    "fym260106_S06",
+    "fym260124_S04",
+    "fym260124_S05",
+    "fym260124_S06"
+  ),
+  input_amount = c(
+    "10 pg",
+    "100 pg",
+    "1 ng",
+    "10 pg",
+    "100 pg",
+    "1 ng",
+    "10 pg",
+    "100 pg",
+    "1 ng"
+  ),
+  method = c(
+    "TAPS",
+    "TAPS",
+    "TAPS",
+    "TAPS+",
+    "TAPS+",
+    "TAPS+",
+    "MOF-TAPS",
+    "MOF-TAPS",
+    "MOF-TAPS"
+  )
+) %>%
+  mutate(
+    input_amount = factor(input_amount, levels = input_order),
+    method = factor(method, levels = method_order)
+  )
+
+meta
+```
+
+```{r read-benchmark-csv}
+metrics_df <- read_csv(
+  "/home/xuyanbo/project/MOF_TAPS/raw_data/HeLa_gDNA_barplot_metrics.csv",
+  col_names = TRUE, show_col_types = FALSE
+)
+
+benchmark_df <- meta %>%
+  left_join(metrics_df, by = "sample") %>%
+  mutate(
+    across(
+      c(
+        library_conc,
+        conversion_2kb_2,
+        conversion_2kb_3,
+        genomic_coverage,
+        covered_cpgs,
+        duplication_rate,
+        mapping_efficiency
+      ),
+      as.numeric
+    ),
+    conversion_2kb_2_pct = 100 * conversion_2kb_2,
+    conversion_2kb_3_pct = 100 * conversion_2kb_3,
+    covered_cpgs_m = covered_cpgs / 1e6,
+    duplication_pct = 100 * duplication_rate,
+    mapping_efficiency_pct = 100 * mapping_efficiency
+  ) 
+benchmark_df
+
+```
+
+# Plot helpers
+
+```{r plot-helper}
+theme_benchmark <- function(show_legend = TRUE,
+                            legend_position = "top",
+                            legend_direction = "horizontal") {
+  theme_classic(base_size = 14, base_family = font_family) +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.4),
+      axis.ticks = element_line(color = "black", linewidth = 0.4),
+      axis.ticks.length = unit(0.16, "cm"),
+      axis.text.x = element_text(size = 14, color = "black", lineheight = 1.3, margin = margin(t = 4)),
+      axis.text.y = element_text(size = 14, color = "black"),
+      axis.title.x = element_text(size = 14, color = "black"),
+      axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 8)),
+
+      legend.position = if (show_legend) legend_position else "none",
+      legend.direction = legend_direction,
+      legend.text = element_text(size = 14, color = "black", margin = margin(l = 2)),
+      legend.title = element_blank(),
+      legend.key = element_blank(),
+      legend.key.height = unit(0.24, "cm"),
+      legend.key.spacing.x = unit(0.25, "cm"),
+      legend.key.spacing.y = unit(0.18, "cm"),
+      legend.background = element_blank(),
+      legend.box.background = element_blank(),
+
+      plot.margin = margin(5, 10, 5, 10)
+    )
+}
+
+plot_metric_bar <- function(df,
+                            y_var,
+                            y_label,
+                            show_legend = TRUE,
+                            y_limits = NULL,
+                            y_breaks = waiver(),
+                            legend_position = "top",
+                            legend_direction = "horizontal") {
+  ggplot(df, aes(x = input_amount, y = .data[[y_var]], fill = method)) +
+    geom_col(
+      position = position_dodge(width = 0.72),
+      width = 0.55,
+      color = "black",
+      linewidth = 0.4
+    ) +
+    scale_fill_manual(
+      values = method_colors,
+      breaks = method_order,
+      limits = method_order,
+      drop = FALSE,
+      guide = guide_legend(nrow = 1, byrow = TRUE)
+    ) +
+    scale_x_discrete(drop = FALSE) +
+    scale_y_continuous(
+      expand = expansion(mult = c(0, 0.06)),
+      limits = y_limits,
+      breaks = y_breaks
+    ) +
+    labs(x = NULL, y = y_label) +
+    theme_benchmark(
+      show_legend = show_legend,
+      legend_position = legend_position,
+      legend_direction = legend_direction
+    )
+}
+```
+
+# Barplots
+
+```{r build-plots}
+p_library <- plot_metric_bar(
+  benchmark_df,
+  y_var = "library_conc",
+  y_label = expression("Library concentration (ng " * mu * "L"^{-1} * ")"),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_conversion_2kb_2 <- plot_metric_bar(
+  benchmark_df,
+  y_var = "conversion_2kb_2_pct",
+  y_label = "Fraction of converted 5mC (%)",
+  y_limits = c(0, 100),
+  y_breaks = seq(0, 100, 20),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_conversion_2kb_3 <- plot_metric_bar(
+  benchmark_df,
+  y_var = "conversion_2kb_3_pct",
+  y_label = "Fraction of converted C (%)",
+  y_limits = c(0, 5),
+  y_breaks = seq(0, 5, 1),
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_genomic_coverage <- plot_metric_bar(
+  benchmark_df,
+  y_var = "genomic_coverage",
+  y_label = "Genomic coverage (%)",
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_covered_cpgs <- plot_metric_bar(
+  benchmark_df,
+  y_var = "covered_cpgs_m",
+  y_label = "Covered CpGs (millions)",
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_duplication <- plot_metric_bar(
+  benchmark_df,
+  y_var = "duplication_pct",
+  y_label = "Duplication rate (%)",
+  legend_position = "top",
+  legend_direction = "horizontal"
+)
+
+p_library
+p_conversion_2kb_2
+p_conversion_2kb_3
+p_genomic_coverage
+p_covered_cpgs
+p_duplication
+```
+
+```{r save-plots}
+ggsave(file.path(out_fig_dir, "library_conc.pdf"), p_library, width = 4, height = 3.2 ,device = cairo_pdf, family = "Arial" )
+ggsave(file.path(out_fig_dir, "conversion_rate.pdf"), p_conversion_2kb_2, width = 4, height = 3.2 ,device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "false_positive_rate.pdf"), p_conversion_2kb_3, width = 4, height = 3.2 ,device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "genomic_coverage.pdf"), p_genomic_coverage, width = 4, height = 3.2 ,device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "covered_cpg.pdf"), p_covered_cpgs, width = 4, height = 3.2 ,device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "duplication_rate.pdf"), p_duplication, width = 4, height = 3.2 ,device = cairo_pdf, family = "Arial")
+```

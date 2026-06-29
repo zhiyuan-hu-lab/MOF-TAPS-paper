@@ -1,0 +1,454 @@
+---
+title: "Fig6 cfDNA filtered TAPS readout correlation"
+author: "Yanbo Xu"
+date: "2026-06-09"
+date-modified: last-modified
+format: 
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  pdf: default
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(grid)
+library(ggnewscale)
+
+project_dir <- normalizePath("/home/xuyanbo/project/MOF_TAPS", mustWork = TRUE)
+
+knitr::opts_chunk$set(dpi = 300, fig.width = 6.5, fig.height = 3, dev = "cairo_pdf", dev.args = list(family = "Arial"))
+
+font_family <- "Arial"
+out_fig_dir <- file.path(
+  project_dir,
+  "analysis", "fig_factory", "fig", "Fig6"
+)
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+corr_bin_size <- 10000L
+min_corr_bin_total_N <- 10L
+min_corr_bin_cpgs <- 1L
+corr_density_bins <- 50L
+
+method_order <- c("TAPS+", "MOF-TAPS")
+clinical_status_order <- c("AML", "Healthy")
+sample_index_order <- as.character(1:3)
+
+clinical_fill <- c(
+  "AML"     = "#957FBB",
+  "Healthy" = "#78B4BC"
+)
+
+set.seed(1)
+```
+
+```{r sample-meta}
+filtered_bedgraph_dir <- file.path(
+  project_dir,
+  "analysis", "cfDNA", "result", "05methy_call", "filter_taps_bedGraph"
+)
+
+meta <- tibble::tibble(
+  sample = c(
+    "FYM_260410_S01", "FYM_260410_S02", "FYM_260410_S03",
+    "FYM_260410_S04", "FYM_260410_S05", "FYM_260410_S06",
+    "FYM_260410_S07", "FYM_260410_S08", "FYM_260410_S09",
+    "FYM_260410_S10", "FYM_260410_S11", "FYM_260410_S12"
+  ),
+  method = c(
+    rep("TAPS+", 6),
+    rep("MOF-TAPS", 6)
+  ),
+  clinical_status = c(
+    rep("Healthy", 3), rep("AML", 3),
+    rep("Healthy", 3), rep("AML", 3)
+  ),
+  sample_id = c(
+    "H1", "H2", "H3", "A1", "A2", "A3",
+    "H1", "H2", "H3", "A1", "A2", "A3"
+  ),
+  sample_index = c(
+    1, 2, 3, 1, 2, 3,
+    1, 2, 3, 1, 2, 3
+  )
+) %>%
+  mutate(
+    method = factor(method, levels = method_order),
+    clinical_status = factor(clinical_status, levels = clinical_status_order),
+    sample_index = factor(sample_index, levels = sample_index_order),
+    file = file.path(filtered_bedgraph_dir, paste0(sample, ".minTotal3.filter_taps.bedGraph"))
+  )
+
+pair_info <- meta %>%
+  select(sample, method, clinical_status, sample_id, sample_index, file) %>%
+  tidyr::pivot_wider(
+    names_from = method,
+    values_from = c(sample, file),
+    names_sep = "__"
+  ) %>%
+  rename(
+    taps_sample = `sample__TAPS+`,
+    mof_sample = `sample__MOF-TAPS`,
+    taps_file = `file__TAPS+`,
+    mof_file = `file__MOF-TAPS`
+  ) %>%
+  arrange(clinical_status, sample_index)
+
+meta
+pair_info
+```
+
+```{r common-plot-theme}
+theme_fig6 <- theme_classic(base_size = 14, base_family = font_family) +
+  theme(
+    panel.border = element_blank(),
+    axis.line = element_line(color = "black", linewidth = 0.4),
+    axis.ticks = element_line(color = "black", linewidth = 0.4),
+    axis.ticks.length = unit(0.16, "cm"),
+    axis.text.x = element_text(size = 14, color = "black", margin = margin(t = 4)),
+    axis.text.y = element_text(size = 14, color = "black"),
+    axis.title.x = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 14, color = "black", margin = margin(r = 8)),
+    legend.position = "right",
+    legend.title = element_text(size = 14, color = "black"),
+    legend.text = element_text(size = 14, color = "black", margin = margin(l = 2)),
+    legend.key = element_blank(),
+    legend.key.width = unit(0.55, "cm"),
+    legend.key.height = unit(0.24, "cm"),
+    legend.key.spacing.x = unit(0.25, "cm"),
+    legend.key.spacing.y = unit(0.18, "cm"),
+    legend.background = element_blank(),
+    legend.box.background = element_blank(),
+    plot.margin = margin(5, 5, 5, 5)
+  )
+
+percent_label <- function(x) paste0(x, "%")
+```
+
+# Paired cfDNA filtered TAPS readout correlation
+
+```{r helper-summarize-filtered-taps-bins}
+summarize_filtered_taps_bins <- function(file, bin_size) {
+  cmd <- sprintf(
+    paste0(
+      "zcat -f %s | awk -v BS=%d '",
+      "BEGIN{OFS=\"\t\"} ",
+      "$0 !~ /^(track|browser|#)/ { ",
+      "  cov = $6; ",
+      "  bin = int($2 / BS) * BS; ",
+      "  key = $1 SUBSEP bin; ",
+      "  positive[key] += $5; total[key] += cov; cpg[key] += 1; ",
+      "} ",
+      "END{ ",
+      "  for (key in total) { ",
+      "    split(key, a, SUBSEP); ",
+      "    print a[1], a[2], a[2] + BS, a[2] + BS / 2, positive[key], total[key], cpg[key]; ",
+      "  } ",
+      "}'"
+    ),
+    shQuote(file), bin_size
+  )
+
+  x <- data.table::fread(
+    cmd = cmd,
+    header = FALSE,
+    col.names = c("chr", "bin_start", "bin_end", "bin_mid", "positive", "N", "covered_CpGs"),
+    showProgress = FALSE
+  )
+
+  x[, `:=`(
+    bin_start = as.integer(bin_start),
+    bin_end = as.integer(bin_end),
+    bin_mid = as.numeric(bin_mid),
+    positive = as.numeric(positive),
+    N = as.numeric(N),
+    covered_CpGs = as.integer(covered_CpGs)
+  )]
+
+  x <- x[N > 0]
+  x[, taps_readout_rate := 100 * positive / N]
+  x[N >= min_corr_bin_total_N & covered_CpGs >= min_corr_bin_cpgs]
+}
+```
+
+
+```{r summarize-all-samples-correlation-bins}
+corr_sample_bin_list <- vector("list", nrow(meta))
+
+for (i in seq_len(nrow(meta))) {
+  message("Summarizing filtered TAPS readout ", corr_bin_size, " bp bins for ", meta$sample[i])
+
+  x <- summarize_filtered_taps_bins(
+    file = meta$file[i],
+    bin_size = corr_bin_size
+  )
+
+  x[, sample := meta$sample[i]]
+  x[, method := as.character(meta$method[i])]
+  x[, clinical_status := as.character(meta$clinical_status[i])]
+  x[, sample_id := meta$sample_id[i]]
+  x[, sample_index := as.character(meta$sample_index[i])]
+
+  corr_sample_bin_list[[i]] <- x
+}
+
+corr_sample_bin_df <- data.table::rbindlist(corr_sample_bin_list, use.names = TRUE)
+corr_sample_bin_df[, method := factor(method, levels = method_order)]
+corr_sample_bin_df[, clinical_status := factor(clinical_status, levels = clinical_status_order)]
+corr_sample_bin_df[, sample_index := factor(sample_index, levels = sample_index_order)]
+
+corr_sample_bin_df[1:10]
+```
+
+```{r summarize-paired-correlation-bins}
+pair_plot_list <- vector("list", nrow(pair_info))
+pair_label_list <- vector("list", nrow(pair_info))
+
+for (i in seq_len(nrow(pair_info))) {
+  p <- pair_info[i, ]
+
+  taps_dt <- corr_sample_bin_df[
+    sample == p$taps_sample,
+    .(chr, bin_start, bin_end, bin_mid, taps_rate = taps_readout_rate)
+  ]
+
+  mof_dt <- corr_sample_bin_df[
+    sample == p$mof_sample,
+    .(chr, bin_start, bin_end, bin_mid, mof_rate = taps_readout_rate)
+  ]
+
+  shared_dt <- merge(
+    taps_dt,
+    mof_dt,
+    by = c("chr", "bin_start", "bin_end", "bin_mid"),
+    all = FALSE
+  )
+
+  pair_plot_list[[i]] <- shared_dt[
+    ,
+    `:=`(
+      clinical_status = as.character(p$clinical_status),
+      sample_id = as.character(p$sample_id),
+      sample_index = as.character(p$sample_index)
+    )
+  ]
+
+  pair_label_list[[i]] <- data.table::data.table(
+    clinical_status = as.character(p$clinical_status),
+    sample_id = as.character(p$sample_id),
+    sample_index = as.character(p$sample_index),
+    n_bins = nrow(shared_dt),
+    pearson_r = if (nrow(shared_dt) >= 3) cor(shared_dt$taps_rate, shared_dt$mof_rate, method = "pearson") else NA_real_
+  )
+}
+
+pair_corr_plot_df <- data.table::rbindlist(pair_plot_list, use.names = TRUE)
+pair_corr_label <- data.table::rbindlist(pair_label_list, use.names = TRUE)
+
+pair_corr_plot_df[, clinical_status := factor(clinical_status, levels = clinical_status_order)]
+pair_corr_plot_df[, sample_index := factor(sample_index, levels = sample_index_order)]
+pair_corr_label[, clinical_status := factor(clinical_status, levels = clinical_status_order)]
+pair_corr_label[, sample_index := factor(sample_index, levels = sample_index_order)]
+pair_corr_label[, label := paste0(sample_id, "\nr = ", sprintf("%.2f", pearson_r))]
+pair_corr_label[, `:=`(x = 5, y = 96)]
+
+pair_corr_label
+```
+
+```{r}
+write.csv(
+  pair_corr_plot_df,
+  file.path(out_fig_dir, "pair_corr_plot_df.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  pair_corr_label,
+  file.path(out_fig_dir, "pair_corr_label.csv"),
+  row.names = FALSE
+)
+```
+
+# Plot
+
+```{r}
+pair_corr_plot_df <- readr::read_csv(
+  file.path(out_fig_dir, "pair_corr_plot_df.csv"),
+  show_col_types = FALSE
+) %>%
+  mutate(
+    clinical_status = factor(clinical_status, levels = clinical_status_order),
+    sample_index = factor(sample_index, levels = sample_index_order)
+  )
+
+pair_corr_label <- readr::read_csv(
+  file.path(out_fig_dir, "pair_corr_label.csv"),
+  show_col_types = FALSE
+) %>%
+  mutate(
+    clinical_status = factor(clinical_status, levels = clinical_status_order),
+    sample_index = factor(sample_index, levels = sample_index_order)
+  )
+```
+
+```{r estimate-bin-count-scale}
+tmp_bin_plot <- ggplot(
+  pair_corr_plot_df,
+  aes(x = taps_rate, y = mof_rate)
+) +
+  geom_bin_2d(bins = corr_density_bins) +
+  facet_grid(sample_index ~ clinical_status, drop = FALSE)
+
+tmp_bin_data_all <- ggplot_build(tmp_bin_plot)$data[[1]]
+
+bin_count_min <- 1L
+bin_count_max_display <- ceiling(
+  as.numeric(quantile(tmp_bin_data_all$count, 0.95, na.rm = TRUE)) / 1000
+) * 1000
+
+bin_count_breaks <- c(bin_count_min, bin_count_max_display)
+bin_count_labels <- c("1", scales::comma(bin_count_max_display))
+
+bin_count_max_display
+```
+
+```{r plot-paired-bin-correlation}
+p_paired_bin_correlation <- ggplot() +
+  geom_bin_2d(
+    data = pair_corr_plot_df %>% filter(clinical_status == "AML"),
+    aes(x = taps_rate, y = mof_rate, fill = after_stat(count)),
+    bins = corr_density_bins,
+    alpha = 1
+  ) +
+  scale_fill_gradient(
+    low = "#FFF7F7",
+    high = clinical_fill["AML"],
+    limits = c(bin_count_min, bin_count_max_display),
+    oob = scales::squish,
+    breaks = bin_count_breaks,
+    labels = bin_count_labels,
+    name = "AML\nbin count",
+    guide = guide_colourbar(
+      order = 1,
+      barheight = unit(2.0, "cm"),
+      barwidth = unit(0.35, "cm"),
+      ticks = TRUE,
+      frame.colour = "black",
+      label.position = "right",
+      label.hjust = 0,
+      title.position = "top",
+      title.hjust = 0,
+      label.theme = element_text(
+        margin = margin(l = 1, r = 0)
+      ),
+      title.theme = element_text(
+        lineheight = 0.75, margin = margin(b = 8, r = 0)
+      )
+    )
+  ) +
+  ggnewscale::new_scale_fill() +
+  geom_bin_2d(
+    data = pair_corr_plot_df %>% filter(clinical_status == "Healthy"),
+    aes(x = taps_rate, y = mof_rate, fill = after_stat(count)),
+    bins = corr_density_bins,
+    alpha = 1
+  ) +
+  scale_fill_gradient(
+    low = "#F7FBFF",
+    high = clinical_fill["Healthy"],
+    limits = c(bin_count_min, bin_count_max_display),
+    oob = scales::squish,
+    breaks = bin_count_breaks,
+    labels = bin_count_labels,
+    name = "Healthy\nbin count",
+    guide = guide_colourbar(
+      order = 2,
+      barheight = unit(2.0, "cm"),
+      barwidth = unit(0.35, "cm"),
+      ticks = TRUE,
+      frame.colour = "black",
+      label.position = "right",
+      label.hjust = 0,
+      title.position = "top",
+      title.hjust = 0,
+      label.theme = element_text(
+        margin = margin(l = 1, r = 0)
+      ),
+      title.theme = element_text(
+        lineheight = 0.75, margin = margin(b = 8, r = 0)
+      )
+    )
+  ) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    color = "black",
+    linewidth = 0.42,
+    linetype = "dashed"
+  ) +
+  geom_text(
+    data = pair_corr_label,
+    aes(x = x, y = y, label = label),
+    inherit.aes = FALSE,
+    hjust = 0,
+    vjust = 1,
+    size = 4.8,
+    family = font_family,
+    color = "black"
+  ) +
+  facet_grid(clinical_status ~ sample_index, drop = FALSE) +
+  scale_x_continuous(
+    breaks = seq(0, 100, 25),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  scale_y_continuous(
+    breaks = seq(0, 100, 25),
+    expand = expansion(mult = c(0, 0))
+  ) +
+  coord_fixed(
+    xlim = c(0, 100),
+    ylim = c(0, 100),
+    clip = "off"
+  ) +
+  labs(
+    x = "TAPS+ methylation level (%)",
+    y = "MOF-TAPS methylation level (%)"
+  ) +
+  theme_fig6 +
+  theme(
+    panel.grid.major = element_line(color = "grey85", linewidth = 0.32, linetype = "dashed"),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+    panel.spacing.x = unit(1.2, "lines"),
+    panel.spacing.y = unit(1.2, "lines"),
+    plot.margin = margin(5, 5, 5, 5),
+    legend.position = "right",
+    legend.box = "vertical",
+    legend.margin = margin(0, 0, 0, 0),
+    axis.title.x = element_text(margin = margin(t = 8))
+  )
+
+p_paired_bin_correlation
+```
+
+```{r save-paired-bin-correlation}
+ggsave(
+  file.path(out_fig_dir, paste0("paired_", corr_bin_size, "bp_filtered_TAPS_readout_correlation_2.pdf")),
+  plot = p_paired_bin_correlation,
+  width = 7.5,
+  height = 4.4,
+  device = cairo_pdf,
+  family = "Arial"
+)
+```

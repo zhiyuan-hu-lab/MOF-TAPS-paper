@@ -1,0 +1,325 @@
+---
+title: "FigSI MOF in PCR"
+author: "Yanbo Xu"
+date: "2026-05-08"
+date-modified: last-modified
+format: 
+  html:
+    toc: true
+    number-sections: true
+    embed-resources: true
+  pdf: default
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(showtext)
+library(grid)
+library(patchwork)
+library(cowplot)
+
+project_dir <- normalizePath("/home/xuyanbo/project/MOF_TAPS", mustWork = TRUE)
+
+knitr::opts_chunk$set(dpi = 300, fig.width = 6, fig.height = 3)
+
+font_file <- "/home/xuyanbo/ARIAL.TTF"
+font_family <- "sans"
+
+if (file.exists(font_file)) {
+  font_add(family = "Arial", regular = font_file)
+  showtext_auto()
+  showtext_opts(dpi = 300)
+  font_family <- "Arial"
+}
+
+input_order <- c("1 ng", "100 pg", "10 pg")
+method_order <- c("MOF-TAPS", "deMOF-TAPS")
+
+method_colors <- c(
+  "MOF-TAPS" = "#3B82C4",
+  "deMOF-TAPS" = "#CB4335"
+)
+
+genome_chr <- paste0("chr", 1:22)
+
+out_fig_dir <- file.path(project_dir, "analysis", "fig_factory", "fig", "FigSI", "PCR")
+dir.create(out_fig_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r}
+theme_benchmark <- function(legend_position = "right") {
+  theme_classic(base_size = 10, base_family = font_family) +
+    theme(
+      panel.border = element_blank(),
+      axis.line = element_line(color = "black", linewidth = 0.4),
+      axis.ticks = element_line(color = "black", linewidth = 0.4),
+      axis.ticks.length = unit(0.16, "cm"),
+
+      axis.text.x = element_text(
+        size = 10,
+        color = "black",
+        lineheight = 1.3,
+        margin = margin(t = 4)
+      ),
+      axis.text.y = element_text(size = 10, color = "black"),
+
+      axis.title.x = element_text(size = 12, color = "black"),
+      axis.title.y = element_text(size = 12, color = "black", margin = margin(r = 8)),
+
+      legend.position = legend_position,
+      legend.text = element_text(size = 10, color = "black", margin = margin(l = 2)),
+      legend.title = element_blank(),
+
+      legend.key.width = unit(0.65, "cm"),
+      legend.key.height = unit(0.24, "cm"),
+      legend.key.spacing.x = unit(0.25, "cm"),
+      legend.key.spacing.y = unit(0.18, "cm"),
+
+      legend.key = element_rect(fill = "white", color = "black", linewidth = 0.25),
+      legend.background = element_blank(),
+      legend.box.background = element_blank(),
+
+      plot.margin = margin(10, 10, 10, 10)
+    )
+}
+
+plot_metric_bar <- function(df,
+                            y_var,
+                            y_label,
+                            x_var = "input_amount",
+                            show_x_text = TRUE,
+                            show_legend = FALSE,
+                            legend_position = "right",
+                            bar_width = 0.55,
+                            dodge_width = 0.72,
+                            y_expand = c(0, 0.06),
+                            y_limits = NULL,
+                            y_breaks = waiver()) {
+
+  p <- ggplot(
+    df,
+    aes(
+      x = .data[[x_var]],
+      y = .data[[y_var]],
+      fill = method
+    )
+  ) +
+    geom_col(
+      position = position_dodge(width = dodge_width),
+      width = bar_width,
+      color = "black",
+      linewidth = 0.4
+    ) +
+    scale_fill_manual(
+      values = method_colors,
+      breaks = method_order,
+      limits = method_order,
+      drop = FALSE,
+      name = NULL,
+      guide = guide_legend(
+        ncol = 1,
+        byrow = FALSE,
+        keywidth = unit(0.65, "cm"),
+        keyheight = unit(0.24, "cm"),
+        override.aes = list(color = "black", linewidth = 0.25)
+      )
+    ) +
+    scale_x_discrete(drop = FALSE) +
+    scale_y_continuous(
+      expand = expansion(mult = y_expand),
+      limits = y_limits,
+      breaks = y_breaks
+    ) +
+    labs(
+      x = NULL,
+      y = y_label
+    ) +
+    theme_benchmark(if (show_legend) legend_position else "none")
+
+  if (!show_x_text) {
+    p <- p + theme(
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank()
+    )
+  }
+
+  p
+}
+```
+
+# metadata
+```{r}
+samples <- c(
+  "fym260124_S01", "fym260124_S02", "fym260124_S03",
+  "fym260124_S04", "fym260124_S05", "fym260124_S06"
+)
+
+meta <- tibble::tibble(
+  sample = samples,
+  input_amount = case_when(
+    sample %in% c("fym260124_S03", "fym260124_S06") ~ "1 ng",
+    sample %in% c("fym260124_S02", "fym260124_S05") ~ "100 pg",
+    sample %in% c("fym260124_S01", "fym260124_S04") ~ "10 pg",
+    TRUE ~ NA_character_
+  ),
+  method = case_when(
+    sample %in% c("fym260124_S01", "fym260124_S02", "fym260124_S03") ~ "deMOF-TAPS",
+    sample %in% c("fym260124_S04", "fym260124_S05", "fym260124_S06") ~ "MOF-TAPS",
+    TRUE ~ NA_character_
+  ),
+  results_dir = case_when(
+    grepl("260124", sample) ~ file.path(project_dir, "analysis", "260124_1x", "result"),
+    TRUE ~ NA_character_
+  )
+) %>%
+  mutate(
+    pcr_cycles = case_when(
+      input_amount == "1 ng"   ~ "9",
+      input_amount == "100 pg" ~ "13",
+      input_amount == "10 pg"  ~ "17",
+      TRUE ~ NA_character_
+    ),
+    x_label = paste0(input_amount, "\n", pcr_cycles),
+    input_amount = factor(input_amount, levels = input_order),
+    method = factor(method, levels = method_order),
+    x_label = factor(x_label, levels = c("1 ng\n9", "100 pg\n13", "10 pg\n17"))
+  )
+
+meta
+```
+
+```{r}
+read_samtools_genome_coverage <- function(sample, results_dir, coverage_dir = "samtools_coverage") {
+  f <- file.path(results_dir, "qc", coverage_dir, paste0(sample, ".coverage.txt"))
+
+  if (!file.exists(f)) {
+    stop("Missing samtools coverage file: ", f)
+  }
+
+  x <- data.table::fread(f)
+  names(x) <- sub("^#", "", names(x))
+
+  required_cols <- c("rname", "startpos", "endpos", "numreads", "covbases", "coverage", "meandepth")
+  missing_cols <- setdiff(required_cols, names(x))
+
+  if (length(missing_cols) > 0) {
+    stop(
+      "Missing columns in samtools coverage file: ",
+      paste(missing_cols, collapse = ", "),
+      "\nFile: ", f
+    )
+  }
+
+  x <- x %>%
+    filter(rname %in% genome_chr) %>%
+    mutate(
+      startpos = as.numeric(startpos),
+      endpos = as.numeric(endpos),
+      covbases = as.numeric(covbases),
+      region_len = endpos - startpos + 1
+    )
+
+  if (nrow(x) == 0) {
+    stop("No autosomal genome chromosomes found in samtools coverage file: ", f)
+  }
+
+  genome_length <- sum(x$region_len, na.rm = TRUE)
+  genome_covbases <- sum(x$covbases, na.rm = TRUE)
+
+  tibble::tibble(
+    sample = sample,
+    pct_1x_100 = 100 * genome_covbases / genome_length
+  )
+}
+
+cov_df <- rbindlist(lapply(seq_len(nrow(meta)), function(i) {
+  read_samtools_genome_coverage(
+    sample = meta$sample[i],
+    results_dir = meta$results_dir[i],
+    coverage_dir = "samtools_coverage"
+  )
+})) %>%
+  left_join(meta, by = "sample")
+```
+
+```{r}
+stats_df <- rbindlist(lapply(seq_len(nrow(meta)), function(i) {
+  s <- meta$sample[i]
+  f <- file.path(meta$results_dir[i], "05methy_dedup", paste0(s, ".dedup_mCtoT_all.stats"))
+
+  if (!file.exists(f)) stop("Missing stats file: ", f)
+
+  x <- fread(f)
+  cpg <- x[`#CONTEXT` == "CpG" & SPECIFIC_CONTEXT == "*"]
+
+  data.table(
+    sample = s,
+    covered_cpg_m = cpg$COVERED_POSITIONS / 1e6
+  )
+})) %>%
+  left_join(meta, by = "sample")
+```
+
+```{r}
+dup_df <- rbindlist(lapply(seq_len(nrow(meta)), function(i) {
+  s <- meta$sample[i]
+  f <- file.path(meta$results_dir[i], "04dedup", paste0(s, ".metrics.txt"))
+
+  if (!file.exists(f)) stop("Missing duplication file: ", f)
+
+  lines <- readLines(f, warn = FALSE)
+  header_i <- which(startsWith(lines, "LIBRARY\t"))[1]
+  if (is.na(header_i)) stop("Cannot find duplication header in: ", f)
+
+  x <- fread(f, skip = header_i - 1, nrows = 1)
+
+  data.table(
+    sample = s,
+    dup_100 = as.numeric(x[["PERCENT_DUPLICATION"]]) * 100
+  )
+})) %>%
+  left_join(meta, by = "sample")
+```
+
+# plots
+```{r}
+p_cov_single <- plot_metric_bar(
+  df = cov_df,
+  y_var = "pct_1x_100",
+  y_label = "Genomic coverage (%)",
+  y_limits = c(0, 25),
+  y_breaks = seq(0, 25, 5)
+)
+
+p_cpg_single <- plot_metric_bar(
+  df = stats_df,
+  y_var = "covered_cpg_m",
+  y_label = "Covered CpGs (Millions)"
+)
+
+p_dup_single <- plot_metric_bar(
+  df = dup_df,
+  y_var = "dup_100",
+  y_label = "Duplication rate (%)",
+  y_limits = c(0, 30),
+  y_breaks = seq(0, 30, 5),
+  show_legend = TRUE
+)
+
+p_cov_single
+p_cpg_single
+p_dup_single
+```
+
+```{r}
+ggsave(file.path(out_fig_dir, "genomic_coverage.pdf"), plot = p_cov_single, width = 3, height = 2.5, units = "in", device = cairo_pdf)
+ggsave(file.path(out_fig_dir, "covered_cpg.pdf"), plot = p_cpg_single, width = 3, height = 2.5, units = "in", device = cairo_pdf)
+ggsave(file.path(out_fig_dir, "duplication_rate.pdf"), plot = p_dup_single, width = 4.2, height = 2.5, units = "in", device = cairo_pdf)
+```
+
