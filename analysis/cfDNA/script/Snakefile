@@ -23,6 +23,9 @@ rule all:
 
         expand(f"{config['qc_dir']}/spikein_prededup_bam/{{sample}}.prededup.spikein.bam", sample=SAMPLES),
         expand(f"{config['qc_dir']}/spikein_prededup_bam/{{sample}}.prededup.spikein.bam.bai", sample=SAMPLES),
+        expand(f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CpG.bedGraph", sample=SAMPLES),
+        expand(f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CHH.bedGraph", sample=SAMPLES),
+        expand(f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CHG.bedGraph", sample=SAMPLES),
         expand(f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext.summary.tsv", sample=SAMPLES),
 
         expand(f"{config['methyldackel_dir']}/raw_bedGraph/{{sample}}.dedup.mergeContext_CpG.bedGraph", sample=SAMPLES),
@@ -256,7 +259,9 @@ rule methyl_call_spikein_prededup:
         ref = config["spike_in_fasta"],
         fai = config["spike_in_fai"]
     output:
-        cpg = temp(f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CpG.bedGraph"),
+        cpg = f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CpG.bedGraph",
+        chg = f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CHG.bedGraph",
+        chh = f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext_CHH.bedGraph",
         summary = f"{config['qc_dir']}/spikein_prededup_methyldackel/{{sample}}.prededup.spikein.mergeContext.summary.tsv"
     threads: 8
     resources:
@@ -274,6 +279,8 @@ rule methyl_call_spikein_prededup:
             -q 10 \
             -p 13 \
             --mergeContext \
+            --CHG \
+            --CHH \
             --OT 10,135,10,135 \
             --OB 10,135,10,135 \
             -l <(
@@ -290,9 +297,9 @@ rule methyl_call_spikein_prededup:
         unconv_2kb_2=`cat {output.cpg} | awk -F "\t" '$1=="2kb_2" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (mC+uC>0) printf("%.4f", uC/(mC+uC)); else printf("NA")}}'`
         cov_2kb_2=`cat {output.cpg} | awk -F "\t" '$1=="2kb_2" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (NR>0) printf("%.4f", (mC+uC)/NR); else printf("NA")}}'`
 
-        conv_2kb_3=`cat {output.cpg} | awk -F "\t" '$1=="2kb_3|Unmodified" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (mC+uC>0) printf("%.4f", mC/(mC+uC)); else printf("NA")}}'`
-        unconv_2kb_3=`cat {output.cpg} | awk -F "\t" '$1=="2kb_3|Unmodified" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (mC+uC>0) printf("%.4f", uC/(mC+uC)); else printf("NA")}}'`
-        cov_2kb_3=`cat {output.cpg} | awk -F "\t" '$1=="2kb_3|Unmodified" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (NR>0) printf("%.4f", (mC+uC)/NR); else printf("NA")}}'`
+        conv_2kb_3=`cat {output.cpg} {output.chg} {output.chh} | awk -F "\t" '$1=="2kb_3|Unmodified" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (mC+uC>0) printf("%.4f", mC/(mC+uC)); else printf("NA")}}'`
+        unconv_2kb_3=`cat {output.cpg} {output.chg} {output.chh} | awk -F "\t" '$1=="2kb_3|Unmodified" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (mC+uC>0) printf("%.4f", uC/(mC+uC)); else printf("NA")}}'`
+        cov_2kb_3=`cat {output.cpg} {output.chg} {output.chh} | awk -F "\t" '$1=="2kb_3|Unmodified" && $5+$6>0' | awk -F "\t" '{{mC+=$6;uC+=$5}}END{{if (NR>0) printf("%.4f", (mC+uC)/NR); else printf("NA")}}'`
 
         echo -e "sample\tconversion_2kb_2\tunconversion_2kb_2\tcoverage_2kb_2\tconversion_2kb_3_unmodified\tunconversion_2kb_3_unmodified\tcoverage_2kb_3_unmodified" > {output.summary}
         echo -e "{wildcards.sample}\t${{conv_2kb_2}}\t${{unconv_2kb_2}}\t${{cov_2kb_2}}\t${{conv_2kb_3}}\t${{unconv_2kb_3}}\t${{cov_2kb_3}}" >> {output.summary}

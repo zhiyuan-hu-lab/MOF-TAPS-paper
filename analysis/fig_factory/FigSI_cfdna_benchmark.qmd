@@ -27,7 +27,7 @@ library(tibble)
 
 project_dir <- normalizePath("/home/xuyanbo/project/MOF_TAPS", mustWork = TRUE)
 
-knitr::opts_chunk$set(dpi = 300, fig.width = 6.5, fig.height = 2.4, dev = "cairo_pdf", dev.args = list(family = "Arial"))
+knitr::opts_chunk$set(dpi = 300, fig.width = 6.5, fig.height = 1.8, dev = "cairo_pdf", dev.args = list(family = "Arial"))
 
 font_family <- "Arial"
 
@@ -45,8 +45,15 @@ clinical_fill <- c(
   "AML"     = "#957FBB"
 )
 
-bar_width <- 0.32
-method_offset <- 0.19
+bar_width <- 0.5
+dodge_width <- 0.6
+point_jitter <- 0.05
+x_padding <- 0.15
+
+status_gap <- 0.72
+status_bar_width <- 0.65
+status_bar_linewidth <- 6.5
+status_bar_offset <- 0.12
 
 genome_chr <- paste0("chr", 1:22)
 
@@ -414,18 +421,7 @@ benchmark_df <- meta %>%
     conversion_2kb_3_pct = 100 * conversion_2kb_3,
     covered_cpgs_m = covered_cpgs / 1e6,
     duplication_pct = 100 * duplication_rate,
-    mapping_efficiency_pct = 100 * mapping_efficiency,
-    box_group = factor(
-      paste(clinical_status, method, sep = "__"),
-      levels = c(
-        "AML__MOF-TAPS",
-        "AML__TAPS+",
-        "Healthy__MOF-TAPS",
-        "Healthy__TAPS+"
-      )
-    ),
-    x_plot = as.numeric(box_group),
-    pair_id = interaction(clinical_status, sample_id, drop = TRUE)
+    mapping_efficiency_pct = 100 * mapping_efficiency
   )
 
 benchmark_df
@@ -445,24 +441,21 @@ theme_benchmark <- function(show_legend = TRUE,
       axis.ticks.length = unit(0.16, "cm"),
       axis.text.x = element_text(size = 12, color = "black", margin = margin(t = 4)),
       axis.text.y = element_text(size = 12, color = "black"),
-      axis.title.x = element_text(size = 12, color = "black"),
+      axis.title.x = element_blank(),
       axis.title.y = element_text(size = 12, color = "black", margin = margin(r = 8)),
 
       legend.position = if (show_legend) legend_position else "none",
       legend.direction = legend_direction,
       legend.justification = "center",
-
       legend.text = element_text(size = 12, color = "black", margin = margin(l = 2)),
       legend.title = element_blank(),
       legend.key = element_blank(),
       legend.key.height = unit(0.20, "cm"),
       legend.key.spacing.x = unit(0.20, "cm"),
       legend.key.spacing.y = unit(0.05, "cm"),
-
       legend.margin = margin(t = 0, r = 0, b = 0, l = 0),
       legend.box.margin = margin(t = 0, r = 0, b = 2, l = 0),
       legend.box.spacing = unit(0.12, "cm"),
-
       legend.background = element_blank(),
       legend.box.background = element_blank(),
       legend.box = "horizontal",
@@ -470,15 +463,6 @@ theme_benchmark <- function(show_legend = TRUE,
       plot.margin = margin(5, 10, 5, 10)
     )
 }
-
-status_rect_df <- tibble::tibble(
-  clinical_status = factor(c("AML", "Healthy"), levels = clinical_status_order),
-  xmin = c(0.5, 2.5),
-  xmax = c(2.5, 4.5),
-  xmid = c(1.5, 3.5),
-  label = c("AML", "Healthy"),
-  fill_color = unname(clinical_fill[c("AML", "Healthy")])
-)
 
 plot_metric_bar <- function(df,
                             y_var,
@@ -491,8 +475,15 @@ plot_metric_bar <- function(df,
                             error_type = c("sem", "sd", "ci95")) {
   error_type <- match.arg(error_type)
 
-  bar_df <- df |>
-    dplyr::group_by(x_plot, box_group, method) |>
+  plot_df <- df |>
+    dplyr::mutate(
+      clinical_status = factor(clinical_status, levels = clinical_status_order),
+      method = factor(method, levels = method_order),
+      status_x = dplyr::if_else(clinical_status == "AML", 1, 1 + status_gap)
+    )
+
+  bar_df <- plot_df |>
+    dplyr::group_by(clinical_status, status_x, method) |>
     dplyr::summarise(
       n = sum(!is.na(.data[[y_var]])),
       mean_value = mean(.data[[y_var]], na.rm = TRUE),
@@ -501,99 +492,92 @@ plot_metric_bar <- function(df,
     ) |>
     dplyr::mutate(
       sem_value = dplyr::if_else(n > 1, sd_value / sqrt(n), 0),
-      ci95_value = dplyr::if_else(
-        n > 1,
-        stats::qt(0.975, df = n - 1) * sem_value,
-        0
-      ),
-      error_value = switch(
-        error_type,
-        sem = sem_value,
-        sd = sd_value,
-        ci95 = ci95_value
+      ci95_value = dplyr::if_else(n > 1, stats::qt(0.975, df = n - 1) * sem_value, 0),
+      error_value = dplyr::case_when(
+        error_type == "sem" ~ sem_value,
+        error_type == "sd" ~ sd_value,
+        error_type == "ci95" ~ ci95_value
       ),
       error_value = tidyr::replace_na(error_value, 0),
       ymin_error = mean_value - error_value,
       ymax_error = mean_value + error_value
     )
 
-  raw_max <- max(df[[y_var]], na.rm = TRUE)
+  status_bar_df <- plot_df |>
+    dplyr::distinct(clinical_status, status_x) |>
+    dplyr::mutate(
+      xmin = status_x - status_bar_width / 2,
+      xmax = status_x + status_bar_width / 2
+    )
+
+  raw_max <- max(plot_df[[y_var]], na.rm = TRUE)
   error_max <- max(bar_df$ymax_error, na.rm = TRUE)
 
-  ymax <- if (is.null(y_limits)) {
-    max(raw_max, error_max, na.rm = TRUE) * 1.08
-  } else {
-    y_limits[2]
-  }
-
+  ymax <- if (is.null(y_limits)) max(raw_max, error_max, na.rm = TRUE) * 1.08 else y_limits[2]
   ymin <- if (is.null(y_limits)) 0 else y_limits[1]
+  status_bar_y <- ymin - status_bar_offset * (ymax - ymin)
 
-  status_ymin <- ymin - 0.12 * (ymax - ymin)
-  status_ymax <- ymin - 0.04 * (ymax - ymin)
-  status_label_y <- ymin - 0.08 * (ymax - ymin)
+  dodge <- position_dodge(width = dodge_width)
 
-  ggplot(df, aes(x = x_plot, y = .data[[y_var]])) +
+  ggplot(plot_df, aes(x = status_x, fill = method, group = method)) +
+    geom_segment(
+      data = status_bar_df,
+      aes(x = xmin, xend = xmax, y = status_bar_y, yend = status_bar_y, color = clinical_status),
+      inherit.aes = FALSE,
+      linewidth = status_bar_linewidth,
+      lineend = "butt",
+      show.legend = FALSE
+    ) +
     geom_col(
       data = bar_df,
-      aes(x = x_plot, y = mean_value, fill = method, group = box_group),
-      inherit.aes = FALSE,
-      width = 0.45,
+      aes(y = mean_value),
+      position = dodge,
+      width = bar_width,
       alpha = 0.72,
       color = "black",
       linewidth = 0.4
     ) +
     geom_errorbar(
       data = bar_df,
-      aes(
-        x = x_plot,
-        ymin = ymin_error,
-        ymax = ymax_error,
-        group = box_group
-      ),
-      inherit.aes = FALSE,
-      width = 0.16,
+      aes(ymin = ymin_error, ymax = ymax_error),
+      position = dodge,
+      width = 0.12,
       linewidth = 0.45,
       color = "black"
     ) +
     geom_point(
-      aes(fill = method),
-      position = position_jitter(width = 0.12, height = 0),
+      aes(y = .data[[y_var]]),
+      position = position_jitterdodge(
+        jitter.width = point_jitter,
+        jitter.height = 0,
+        dodge.width = dodge_width,
+        seed = 1
+      ),
       shape = 21,
-      size = 2.4,
+      size = 2.5,
       color = "black",
       stroke = 0.35
     ) +
-    geom_rect(
-      data = status_rect_df,
-      aes(xmin = xmin, xmax = xmax, ymin = status_ymin, ymax = status_ymax),
-      inherit.aes = FALSE,
-      fill = status_rect_df$fill_color,
-      color = NA,
-      alpha = 0.70,
-      show.legend = FALSE
-    ) +
-    geom_text(
-      data = status_rect_df,
-      aes(x = xmid, y = status_label_y, label = label),
-      inherit.aes = FALSE,
-      size = 3.2,
-      family = font_family,
-      color = "black"
-    ) +
     scale_fill_manual(
-      values = c(method_colors, clinical_fill),
+      values = method_colors,
       breaks = method_order,
       limits = method_order,
       drop = FALSE
     ) +
+    scale_color_manual(
+      values = clinical_fill,
+      breaks = clinical_status_order,
+      limits = clinical_status_order,
+      drop = FALSE
+    ) +
     scale_x_continuous(
-      breaks = 1:4,
-      labels = c("", "", "", ""),
-      expand = expansion(mult = c(0.04, 0.04))
+      breaks = c(1, 1 + status_gap),
+      labels = clinical_status_order,
+      expand = expansion(add = x_padding)
     ) +
     scale_y_continuous(
-      expand = expansion(mult = c(0, 0)),
-      breaks = y_breaks
+      breaks = y_breaks,
+      expand = expansion(mult = c(0, 0.02))
     ) +
     coord_cartesian(ylim = c(ymin, ymax), clip = "off") +
     labs(x = NULL, y = y_label) +
@@ -601,8 +585,7 @@ plot_metric_bar <- function(df,
       show_legend = show_legend,
       legend_position = legend_position,
       legend_direction = legend_direction
-    ) +
-    theme(plot.margin = margin(5, 10, 5, 10))
+    )
 }
 ```
 
@@ -612,7 +595,7 @@ plot_metric_bar <- function(df,
 p_library <- plot_metric_bar(
   benchmark_df,
   y_var = "library_conc",
-  y_label = expression("Library concentration (ng " * mu * "L"^{-1} * ")"),
+  y_label = expression("Library conc. (ng " * mu * "L"^{-1} * ")"),
   legend_position = "top",
   legend_direction = "horizontal"
 )
@@ -630,7 +613,7 @@ p_conversion_2kb_3 <- plot_metric_bar(
   benchmark_df,
   y_var = "conversion_2kb_3_pct",
   y_label = "Fraction of converted C (%)",
-  y_limits = c(0, 1),
+  y_limits = c(0, 2),
   legend_position = "top",
   legend_direction = "horizontal"
 )
@@ -681,11 +664,11 @@ p_mapping_efficiency
 ```
 
 ```{r save-plots}
-ggsave(file.path(out_fig_dir, "library_concentration.pdf"), p_library, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
-ggsave(file.path(out_fig_dir, "conversion_rate.pdf"), p_conversion_2kb_2, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
-ggsave(file.path(out_fig_dir, "false_positive_rate.pdf"), p_conversion_2kb_3, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
-ggsave(file.path(out_fig_dir, "genomic_coverage.pdf"), p_genomic_coverage, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
-ggsave(file.path(out_fig_dir, "covered_cpg.pdf"), p_covered_cpgs, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
-ggsave(file.path(out_fig_dir, "duplication_rate.pdf"), p_duplication, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
-ggsave(file.path(out_fig_dir, "mapping_efficiency.pdf"), p_mapping_efficiency, width = 3.6, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "library_concentration.pdf"), p_library, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "conversion_rate.pdf"), p_conversion_2kb_2, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "false_positive_rate.pdf"), p_conversion_2kb_3, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "genomic_coverage.pdf"), p_genomic_coverage, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "covered_cpg.pdf"), p_covered_cpgs, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "duplication_rate.pdf"), p_duplication, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
+ggsave(file.path(out_fig_dir, "mapping_efficiency.pdf"), p_mapping_efficiency, width = 3, height = 2.4, device = cairo_pdf, family = "Arial")
 ```

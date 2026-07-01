@@ -13,6 +13,7 @@
 !analysis/HeLa_gDNA/script/*
 !analysis/fig_factory/*.qmd
 !analysis/fig_factory/*.ipynb
+!analysis/fig_factory/*.html
 
 # script
 !script/*.sh
