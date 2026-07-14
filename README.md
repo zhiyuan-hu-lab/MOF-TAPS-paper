@@ -12,7 +12,7 @@ Yumin Feng<sup>1,†</sup>, Yanbo Xu<sup>2,†</sup>, Zipeng Wang<sup>1,†</sup
 
 <sup>* </sup> Correspondence: liuyibin@whu.edu.cn, zhiyuan.hu@whu.edu.cn, xzhou@whu.edu.cn
 
-## Data preprocessing
+## Data processing
 
 Containing The pipeline using Snakemake consists steps from QC to methylation calling. Code in `analysis/HeLa_gDNA/script` and `analysis/cfDNA/script`.
 
